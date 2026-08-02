@@ -1,0 +1,133 @@
+[project]
+name = "pydantic-gepa"
+dynamic = ["version"]
+description = "GEPA adapters and optimization utilities for Pydantic AI and Pydantic Evals."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+keywords = ["gepa", "pydantic-ai", "pydantic-evals", "prompt-optimization"]
+dependencies = [
+    "click>=8.1",
+    "pydantic>=2.7",
+    "pyyaml>=6",
+    "rich>=13",
+    "typing-extensions>=4.12",
+]
+
+[project.scripts]
+pydantic-gepa = "pydantic_gepa.cli:cli"
+
+[project.optional-dependencies]
+logfire = [
+    "logfire>=3",
+]
+progress = [
+    "rich>=13",
+]
+integrations = [
+    "gepa>=0.1.1",
+    "pydantic-ai>=0.1.0",
+    "pydantic-evals>=0.1.0",
+]
+examples = [
+    "gepa>=0.1.1",
+    "logfire>=3",
+    "pydantic-ai>=0.1.0",
+    "pydantic-evals>=0.1.0",
+    "python-dotenv>=1",
+]
+dev = [
+    "basedpyright",
+    "pre-commit",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "rich>=13",
+    "ty",
+]
+docs = [
+    "mkdocs-material>=9.6",
+]
+
+[project.urls]
+Documentation = "https://vcoderun.github.io/pydantic-gepa/"
+Repository = "https://github.com/vcoderun/pydantic-gepa"
+Changelog = "https://github.com/vcoderun/pydantic-gepa/blob/main/CHANGELOG.md"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/pydantic_gepa/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pydantic_gepa"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+    ".venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "N",
+    "W",
+    "UP",
+    "B",
+    "C4",
+    "SIM",
+]
+ignore = [
+    "E501",
+    "B008",
+]
+
+[tool.ty]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+    "--color=yes",
+]
+markers = []
+
+[tool.coverage.run]
+branch = true
+source = ["src/pydantic_gepa"]
+omit = [
+    "src/pydantic_gepa/_version.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+precision = 2
+fail_under = 100

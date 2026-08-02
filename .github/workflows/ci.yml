@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install Python
+        run: uv python install 3.11.13 3.12.10 3.13.9
+      - name: Run production gates
+        run: make prod
+      - name: Run repository hooks
+        run: make pre-commit
+      - name: Build distributions
+        run: uv build
