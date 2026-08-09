@@ -1,27 +1,66 @@
 # Migration
 
-## Injections
+## From direct Pydantic Evals construction
 
-Existing injection classes remain compatibility adapters. Prefer `Runtime`
-candidate scopes or Pydantic AI component constructors for new integrations.
+Before:
 
-## Loose backend options
+```python
+dataset = Dataset(cases=[], evaluators=[...])
+cases = [Case(inputs=..., expected_output=...)]
+adapter = PydanticGEPAAdapter.from_dataset(...)
+```
 
-Replace standalone GEPA keyword arguments with `GEPAConfig`. The legacy parser
-warns, maps known keys, and rejects unknown keys.
+After:
 
-## Recorder callbacks
+```python
+pipeline = Optimization.from_examples(
+    examples=[Example(inputs=..., expected_output=...)],
+    val_examples=validation,
+    task=task,
+    score=score,
+    components=components,
+    injections=injections,
+)
+```
 
-Replace candidate/event recorder dictionaries with typed `on_event` callbacks.
-Use `RunStore` for durable state rather than treating an observer as a sink.
+Keep direct datasets only when custom Pydantic Evals evaluator lifecycle is the
+reason for the integration.
 
-## Single backend call
+## From loose candidate dictionaries
 
-One optimization remains valid. Use `Plan` when multiple components or
-subjects require deterministic sequential/grouped execution.
+Wrap values in `Candidate` and describe the search space with `Component` or
+`ComponentCatalog`. This adds serialization, stable identity, lineage, schema
+metadata, and injection validation.
 
-## Pydantic Evals
+## From manual output-type factories
 
-Common callers provide `list[Example]`, task/scorer callables, and optional
-custom evaluators. Direct `Dataset`/`Case` construction belongs only in the
-advanced compatibility layer.
+Replace custom Pydantic model subclass builders with:
+
+```python
+output_schema = ModelOutputInjection(MyOutput)
+```
+
+Merge `output_schema.components`, include `output_schema` in injections, and
+pass `output_schema.require()` directly as the Pydantic AI `output_type`.
+
+## From untyped GEPA kwargs
+
+Replace standalone options with `GEPAConfig` nested models. The compatibility
+mapper recognizes known legacy names and rejects unknown values.
+
+## From direct GEPA optimizer calls
+
+Move candidate evaluation into `optimize(...)` or `Optimization`. Use the
+low-level adapter only if the integration must explicitly inspect evaluation
+batches or reflective datasets.
+
+## From one monolithic optimizer
+
+Use `Plan` only when component ownership, budgets, or validation differ by
+stage. Do not split a simple optimization solely for style.
+
+## From standard to Optimize Anything
+
+Set `backend="optimize_anything"`, provide objective/background, and import
+low-level backend types only from the experimental module. Keep the standard
+backend available until validation demonstrates parity for the application.

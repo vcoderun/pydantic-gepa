@@ -1,0 +1,46 @@
+# pydantic-gepa
+
+> Typed GEPA optimization for Pydantic applications. Define typed examples,
+> candidate components, application bindings, and evaluation once; run standard
+> GEPA or the experimental Optimize Anything backend without exposing ordinary
+> users to Pydantic Evals plumbing.
+
+Documentation: https://vcoderun.github.io/pydantic-gepa/
+Repository: https://github.com/vcoderun/pydantic-gepa
+Full documentation corpus: https://vcoderun.github.io/pydantic-gepa/llms-full.txt
+
+## Start
+
+- [Home](https://vcoderun.github.io/pydantic-gepa/): package purpose and boundaries
+- [Installation](https://vcoderun.github.io/pydantic-gepa/installation/): extras and environment setup
+- [First Optimization](https://vcoderun.github.io/pydantic-gepa/getting-started/): complete common API walkthrough
+- [Mental Model](https://vcoderun.github.io/pydantic-gepa/concepts/): examples, candidates, injection, evaluation, and results
+- [Example Gallery](https://vcoderun.github.io/pydantic-gepa/examples/): runnable repository programs
+
+## Common API
+
+- [Examples And Data](https://vcoderun.github.io/pydantic-gepa/data/)
+- [Components And Candidates](https://vcoderun.github.io/pydantic-gepa/components/)
+- [Candidate Injection](https://vcoderun.github.io/pydantic-gepa/injections/)
+- [Evaluation](https://vcoderun.github.io/pydantic-gepa/evaluation/)
+- [Optimization](https://vcoderun.github.io/pydantic-gepa/optimization/)
+- [Results And Lineage](https://vcoderun.github.io/pydantic-gepa/results/)
+
+## Runtime And Integration
+
+- [Typed GEPA Configuration](https://vcoderun.github.io/pydantic-gepa/configuration/)
+- [Reflection And Feedback](https://vcoderun.github.io/pydantic-gepa/reflection/)
+- [Plans And Stages](https://vcoderun.github.io/pydantic-gepa/plans/)
+- [Checkpoint And Resume](https://vcoderun.github.io/pydantic-gepa/state/)
+- [Pydantic AI](https://vcoderun.github.io/pydantic-gepa/pydantic-ai/)
+- [Schema Optimization](https://vcoderun.github.io/pydantic-gepa/schema-optimization/)
+- [Multimodal Evidence](https://vcoderun.github.io/pydantic-gepa/multimodal/)
+- [Optimize Anything](https://vcoderun.github.io/pydantic-gepa/optimize-anything/)
+- [Command Line](https://vcoderun.github.io/pydantic-gepa/cli/)
+
+## Reference
+
+- [Architecture](https://vcoderun.github.io/pydantic-gepa/architecture/)
+- [Capability Map](https://vcoderun.github.io/pydantic-gepa/capabilities/)
+- [Python API](https://vcoderun.github.io/pydantic-gepa/api-reference/)
+- [Troubleshooting](https://vcoderun.github.io/pydantic-gepa/troubleshooting/)

@@ -1,16 +1,69 @@
 # Events And Observability
 
-Every lifecycle notification is a discriminated `Event` with a stable `kind`,
-run/stage/candidate identifiers, sequence number, and event-specific payload.
+Optimization emits typed events independently of any one logging platform.
+Observers receive those events and may render progress, persist evidence, or
+forward telemetry.
 
-Observers are ordinary typed callables. `compose_observers(...)` controls
-observer failure behavior. Built-in adapters include:
+## Event observer
 
-- `rich_progress(...)` for interactive bars and deterministic noninteractive
-  status lines;
-- `logfire_observer(...)` for structured Logfire events;
-- `autobench_observer(...)` for an optional recorder contract;
-- `callback_observer(...)` for serialized payload consumers.
+```python
+from pydantic_gepa import Event
 
-Events are observational. `RunStore` remains the source of truth for resume and
-result persistence.
+events: list[Event] = []
+
+result = optimize(
+    ...,
+    on_event=events.append,
+)
+```
+
+Events identify the run, stage, kind, message, progress, candidate, score,
+budget, and structured payload when available.
+
+## Rich progress
+
+```python
+from pydantic_gepa.observers import rich_progress
+
+result = plan.run(on_event=[rich_progress()])
+```
+
+Rich rendering is a presentation observer. It does not own optimization state.
+
+## Logfire
+
+```python
+from pydantic_gepa.observers import logfire_observer
+
+observer = logfire_observer()
+result = plan.run(on_event=[observer])
+```
+
+Install the `logfire` extra and configure Logfire in the application. The
+observer adds optimization events to the existing telemetry environment; it
+does not configure credentials or globally instrument Pydantic AI.
+
+## Reflection records
+
+`CallableReflectionModel` and `PydanticAIReflectionModel` expose normalized
+records including duration, retries, usage, cost, and error state. These records
+help distinguish evaluation cost from reflection cost.
+
+## Backend callbacks
+
+`TrackingConfig.backend_callbacks` forwards supported GEPA callbacks. Use typed
+package observers for portable behavior and backend callbacks only when a GEPA
+feature has no normalized event yet.
+
+## External recorders
+
+`CandidateEvaluationRecorder`, `OptimizationEventRecorder`, and
+`GEPAEventBridge` define package boundaries for systems such as Autobench. A
+recorder should retain immutable evidence and must not modify candidate scores.
+
+## Failure policy
+
+Observer errors are configured separately through
+`TrackingConfig.observer_errors`. Production runs should make the choice
+explicit: telemetry loss may be non-fatal, while durable evidence recording may
+need fail-fast behavior.

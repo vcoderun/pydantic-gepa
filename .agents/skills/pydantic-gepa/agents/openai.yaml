@@ -1,0 +1,7 @@
+interface:
+  display_name: "pydantic-gepa"
+  short_description: "Build typed GEPA optimization pipelines"
+  brand_color: "#2563EB"
+  default_prompt: "Use $pydantic-gepa to build and validate a typed optimization pipeline for this application."
+policy:
+  allow_implicit_invocation: true

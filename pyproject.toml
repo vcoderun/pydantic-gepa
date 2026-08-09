@@ -55,7 +55,8 @@ dev = [
     "ty",
 ]
 docs = [
-    "mkdocs-material>=9.6",
+    "mkdocstrings-python",
+    "zensical",
 ]
 
 [project.urls]
@@ -72,6 +73,15 @@ path = "src/pydantic_gepa/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pydantic_gepa"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/.agents",
+    "/AGENTS.md",
+    "/docs/_markdown",
+    "/site",
+    "/uv.lock",
+]
 
 [tool.ruff]
 line-length = 100

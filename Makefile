@@ -44,10 +44,21 @@ check-coverage:
 	@uv run --extra dev pytest --cov=. -q
 	@printf "$(GREEN)✔ Coverage thresholds satisfied.$(RESET)\n"
 
+docs-llms:
+	@printf "$(BLUE)==>$(RESET) Generating LLM documentation bundle...\n"
+	@uv run --extra docs python scripts/llms.py --write
+	@printf "$(GREEN)✔ LLM documentation bundle generated.$(RESET)\n"
+
 docs:
-	@printf "$(BLUE)==>$(RESET) Building documentation...\n"
-	@uv run --extra docs mkdocs build --strict
+	@uv run --extra docs python scripts/llms.py --check
+	@uv run --extra docs python scripts/llms.py --stage
+	@printf "$(BLUE)==>$(RESET) Building Zensical site in strict mode...\n"
+	@uv run --extra docs zensical build --clean --strict
 	@printf "$(GREEN)✔ Documentation build complete.$(RESET)\n"
+
+docs-serve: docs
+	@printf "$(BLUE)==>$(RESET) Serving Zensical documentation...\n"
+	@uv run --extra docs zensical serve --open
 
 all: format check
 

@@ -1,112 +1,49 @@
 # API Stability
 
-`pydantic-gepa` exposes a small common vocabulary and keeps lower-level
-integration contracts in their owning modules.
+Pydantic-gepa is pre-1.0. Compatibility is managed by surface, not by treating
+every import as equally stable.
 
-## Common API
+## Common surface
 
-The intended application-facing names are:
+The intended application-facing vocabulary is:
 
-- `Candidate`
-- `Budget`
-- `CaseResult`
-- `CacheStore`
-- `Component`
-- `Context`
-- `DataSplit`
-- `Evaluation`
-- `EvaluationConfig`
-- `Example`
-- `GEPAConfig`
-- `InMemoryCache`
-- `MetricResult`
-- `MetricRole`
-- `Optimization`
-- `OptimizationResult`
-- `Plan`
-- `PlanResult`
-- `Runtime`
-- `RunConfig`
-- `Stage`
-- `StageResult`
-- `CallableReflectionModel`
-
-`Optimization.run()` is the preferred execution spelling.
-
-## Supported Python Versions
-
-The `0.1` alpha supports and continuously validates Python 3.11, 3.12, and
-3.13. Python 3.10 is outside the package's declared `>=3.11` baseline. Python
-3.14 will be declared only after the complete GEPA, Pydantic AI, and Pydantic
-Evals integration matrix is qualified; it is not claimed based on import-only
-testing.
-
-## Compatibility API
-
-The following existing names remain supported while the common API evolves:
-
-- `CandidateComponent`
-- `PydanticGEPAOptimization`
+- `optimize` and `Optimization`
+- `Example`, `Attachment`, and `DataSplit`
+- `Component`, `ComponentCatalog`, and `Candidate`
+- candidate injections
+- `Evaluation`, `Runtime`, and `MetricResult`
+- `GEPAConfig` and nested typed configuration
 - `PydanticGEPAResult`
-- `PydanticGEPAOptimizer`
-- `PydanticGEPAAdapter`
-- candidate injection classes
-- recorder contracts
+- `Plan`, `Stage`, `Budget`, and `RunConfig`
 
-Compatibility names retain their current behavior. Their presence does not
-make them the preferred API for new applications.
+Changes to these names should include migration guidance and compatibility where
+practical.
 
-## Advanced API
+## Advanced surface
 
-Advanced modules expose typed integration seams for:
+Adapters, ASI builders, report envelopes, custom cache stores, recorder
+contracts, and backend callbacks are public for integration authors but may
+evolve faster than the common API.
 
-- GEPA adapters and backend result normalization
-- Pydantic Evals harness behavior
-- candidate injection internals
-- reflective dataset construction
-- schema component extraction and application
-- Optimize Anything experimental support
-- staged and grouped optimization snapshots, runners, and aggregation callbacks
-- reflection model adaptation and normalized reflection usage records
+## Experimental surface
 
-Advanced public contracts remain usable without being part of the common root
-vocabulary. Experimental APIs remain under `pydantic_gepa.experimental`.
+Anything under `pydantic_gepa.experimental` may change in a minor release as its
+upstream backend changes. Experimental types still return common candidates and
+results where possible.
 
-The remaining names currently exported from the root package are classified as
-advanced while compatibility migration is in progress:
+## Compatibility aliases
 
-- ASI and reflection: `ASIBuilder`, `ComponentRecordSelector`,
-  `PydanticEvalsASIBuilder`, `PydanticEvalTrajectory`, `SampleSelection`
-- adapters and harnesses: `DataInstT`, `EvaluationBatch`, `GEPAAdapter`,
-  `OptimizeFn`, `PydanticEvalsHarness`, `RolloutOutputT`, `run_awaitable_sync`
-- component selection: `ComponentCatalog`, `ComponentKind`,
-  `ComponentSelector`, `SelectorMode`, `SerializationMode`
-- evaluation: `EvalContextView`, `EvaluationContext`, `EvaluationOutput`,
-  `EvaluationReasonView`, `EvaluationScalar`, `EvaluationValue`,
-  `ObjectiveDirection`, `OptimizationBackend`, `PydanticEvaluator`,
-  `RescoreResult`, `ScoreFunction`, `ScoreObjective`, `ScoreOutput`,
-  `arun_rescore`, `model_field_accuracy`, `rescore`
-- schema components: `ModelSchemaCandidate`, `SchemaComponentTarget`,
-  `SchemaDescription`, `ToolDefinitionView`, `ToolSchemaCandidate`,
-  `apply_model_schema_candidate`, `apply_tool_schema_candidate`,
-  `collect_model_components`, `collect_tool_components`,
-  `collect_toolset_components`, `description_key`, `format_schema_path`,
-  `iter_model_descriptions`, `iter_schema_descriptions`, `parameter_key`,
-  `parse_schema_path`, `set_schema_description`
-- errors: `CandidateComponentError`, `CandidateInjectionError`,
-  `EvaluationHarnessError`, `EvidenceEncodingError`, `InfrastructureError`,
-  `InvalidScoreError`, `OptimizationDependencyError`, `PydanticGEPAError`
-- orchestration errors: `PlanError`
-- result normalization: `CandidateSummary`, `result_from_gepa`
-- metadata: `MetricSideInfoValue`, `__version__`
+`PydanticGEPAOptimization` aliases `Optimization`. Compatibility helpers exist
+to migrate earlier code, but new docs use the shortest current names.
 
-## Change Policy
+## Persistence
 
-- Stable common names require a documented migration path before removal.
-- Compatibility names may be deprecated only after their replacement covers
-  the same behavior.
-- Advanced contracts follow semantic versioning but may evolve more quickly
-  than the common API.
-- Experimental contracts may change between minor releases.
-- No compatibility alias may silently change score, candidate, dataset, or
-  result semantics.
+Persist candidate YAML and `PydanticGEPAResult.stable_dump()`, not raw GEPA
+objects, Pydantic Evals reports, context manager instances, or reflection model
+clients.
+
+## Deprecation policy
+
+Deprecated APIs should warn before removal and document the replacement.
+Unknown untyped configuration is rejected rather than silently accepted, which
+keeps upgrades observable.

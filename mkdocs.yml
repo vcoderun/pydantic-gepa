@@ -1,33 +1,114 @@
 site_name: pydantic-gepa
-site_description: Typed, replayable GEPA optimization for Pydantic applications.
+site_url: https://vcoderun.github.io/pydantic-gepa/
+site_description: Typed GEPA optimization for Pydantic AI applications.
+repo_url: https://github.com/vcoderun/pydantic-gepa
+repo_name: vcoderun/pydantic-gepa
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 pydantic-gepa contributors
 theme:
-  name: material
+  variant: modern
+  custom_dir: overrides
+  language: en
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    logo: lucide/workflow
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme)"
+      primary: blue
+      accent: green
+      toggle:
+        icon: lucide/sun-moon
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: green
+      toggle:
+        icon: lucide/moon
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: green
+      toggle:
+        icon: lucide/sun
+        name: Switch to system preference
   features:
     - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
     - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - toc.follow
+    - content.action.edit
+    - content.action.view
     - content.code.copy
-nav:
-  - Overview: index.md
-  - Architecture: architecture.md
-  - Common API: common-api.md
-  - Evaluation: evaluation.md
-  - Candidates and concurrency: candidates-concurrency.md
-  - Multimodal evidence: multimodal.md
-  - Plans and stages: plans.md
-  - Checkpoint and resume: state.md
-  - Events and observability: observability.md
-  - CLI: cli.md
-  - Typed configuration: configuration.md
-  - Advanced adapters: advanced-adapters.md
-  - Autobench bridge: autobench.md
-  - Autoptimize contract: autoptimize.md
-  - Migration: migration.md
-  - API stability: api-stability.md
-  - Changelog: changelog.md
+    - search.highlight
 markdown_extensions:
   - admonition
   - attr_list
-  - pymdownx.highlight:
-      anchor_linenums: true
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.inlinehilite
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+extra_css:
+  - stylesheets/copy-markdown.css
+extra_javascript:
+  - javascripts/copy-markdown.js
+plugins:
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+nav:
+  - Home: index.md
+  - Get Started:
+      - Installation: installation.md
+      - First Optimization: getting-started.md
+      - Mental Model: concepts.md
+      - Example Gallery: examples.md
+  - Common API:
+      - Examples And Data: data.md
+      - Components And Candidates: components.md
+      - Candidate Injection: injections.md
+      - Evaluation: evaluation.md
+      - Optimization: optimization.md
+      - Results And Lineage: results.md
+  - Optimization Runtime:
+      - Typed GEPA Configuration: configuration.md
+      - Reflection And Feedback: reflection.md
+      - Candidates And Concurrency: candidates-concurrency.md
+      - Plans And Stages: plans.md
+      - Checkpoint And Resume: state.md
+  - Pydantic Integration:
+      - Pydantic AI: pydantic-ai.md
+      - Schema Optimization: schema-optimization.md
+      - Multimodal Evidence: multimodal.md
+  - Advanced:
+      - Low-Level Adapter: advanced-adapters.md
+      - Optimize Anything: optimize-anything.md
+      - Events And Observability: observability.md
+      - Command Line: cli.md
+  - Ecosystem:
+      - Autobench Bridge: autobench.md
+      - Autoptimize Contract: autoptimize.md
+      - Architecture: architecture.md
+  - Reference:
+      - Capability Map: capabilities.md
+      - Python API: api-reference.md
+      - API Stability: api-stability.md
+      - Migration: migration.md
+      - Troubleshooting: troubleshooting.md
+      - Development: development.md
+      - Changelog: changelog.md
 strict: true

@@ -3,6 +3,8 @@
 `pydantic-gepa` provides a typed optimization runtime over GEPA, Pydantic AI,
 and internally managed Pydantic Evals execution.
 
+Full documentation: **https://vcoderun.github.io/pydantic-gepa/**
+
 ```python
 from pydantic_gepa import AgentInstructionsInjection, Component, Example, optimize
 
@@ -69,6 +71,12 @@ Build the documentation with:
 
 ```bash
 make docs
+```
+
+Serve it locally with:
+
+```bash
+make docs-serve
 ```
 
 Run a configured Python target from the CLI:

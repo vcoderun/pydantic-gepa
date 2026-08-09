@@ -1,0 +1,2714 @@
+# pydantic-gepa Full Documentation
+
+> Complete, LLM-readable documentation for typed GEPA optimization of Pydantic AI applications, components, schemas, and multi-stage pipelines.
+
+Canonical documentation: https://vcoderun.github.io/pydantic-gepa/
+
+This file follows the site navigation order. Each section includes the canonical page URL followed by its complete Markdown source.
+
+---
+
+## Home
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/
+
+# Typed evolutionary optimization for Pydantic applications
+
+`pydantic-gepa` lets you optimize prompts, instructions, tool descriptions,
+structured-output schemas, and other text components without exposing your
+application to GEPA's callback plumbing. You provide typed examples, the
+callable that runs your application, a scoring function, and the components
+that may change. The library runs Pydantic Evals internally and returns a typed,
+inspectable optimization result.
+
+```python
+from pydantic_gepa import Component, Example, optimize
+
+instructions = Component(
+    name="instructions",
+    initial_text="Classify the support request.",
+    kind="instructions",
+)
+
+result = optimize(
+    train=[Example(inputs="Where is my order?", expected_output="shipping")],
+    validation=[Example(inputs="Refund order 123", expected_output="refund")],
+    task=run_classifier,
+    score=lambda ctx: float(ctx.output == ctx.expected_output),
+    components=[instructions],
+    reflection="openai:gpt-5-mini",
+    budget=50,
+)
+
+print(result.best_candidate.values)
+print(result.best_score)
+```
+
+## What the package owns
+
+The common API owns the integration work between three systems:
+
+1. **Your application** remains an ordinary typed callable or Pydantic AI agent.
+2. **Pydantic Evals** executes and evaluates examples internally. You do not
+   need to construct `Dataset` or `Case` objects.
+3. **GEPA** proposes and selects candidate components. Typed configuration,
+   candidate normalization, reflection evidence, and results are handled by
+   `pydantic-gepa`.
+
+This boundary makes the optimizer useful outside Autobench. Autobench can
+record its evidence, and Autoptimize can orchestrate promotion, but neither is
+required for a standalone optimization.
+
+## What you can optimize
+
+- Pydantic AI agent instructions and system prompts
+- tool descriptions and parameter descriptions
+- Pydantic output-model and nested field descriptions
+- several coupled components in one candidate
+- arbitrary values derived from candidate text through a typed context
+- staged component groups with shared budgets and checkpoints
+- experimental Optimize Anything objectives
+
+## Start here
+
+- [Install the package](installation.md)
+- [Run the first optimization](getting-started.md)
+- [Learn the mental model](concepts.md)
+- [Choose a complete example](examples.md)
+- [Inspect the Python API](api-reference.md)
+
+!!! note "Alpha status"
+
+    The package is usable, typed, and tested, but its version is still pre-1.0.
+    Experimental APIs are explicitly isolated under
+    `pydantic_gepa.experimental`.
+
+---
+
+## Installation
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/installation/
+
+# Installation
+
+## Common API
+
+Install the package and runtime integrations with `uv`:
+
+```bash
+uv add pydantic-gepa
+uv add "pydantic-gepa[integrations]"
+```
+
+Or with `pip`:
+
+```bash
+pip install "pydantic-gepa[integrations]"
+```
+
+The base package contains candidate models, configuration, orchestration,
+result models, and the CLI. The `integrations` extra installs GEPA, Pydantic AI,
+and Pydantic Evals for actual optimization runs.
+
+## Optional features
+
+```bash
+uv add "pydantic-gepa[logfire]"       # Logfire observer integration
+uv add "pydantic-gepa[progress]"      # Rich progress rendering
+uv add "pydantic-gepa[examples]"      # All example dependencies
+```
+
+## Python support
+
+Python 3.11, 3.12, and 3.13 are supported. Verify the installation:
+
+```bash
+uv run python -c "import pydantic_gepa; print(pydantic_gepa.__version__)"
+pydantic-gepa --help
+```
+
+## Provider credentials
+
+Model credentials are consumed by Pydantic AI or the reflection provider, not
+by a separate pydantic-gepa credential system. Configure the environment
+variables expected by your provider before a live run.
+
+Do not commit keys in optimization targets, candidate YAML, run directories,
+or examples. Candidate and result files are intended to be inspectable and may
+be persisted.
+
+## Development checkout
+
+```bash
+git clone https://github.com/vcoderun/pydantic-gepa.git
+cd pydantic-gepa
+uv sync --extra dev --extra integrations --extra docs
+make prod
+```
+
+`make prod` runs formatting checks, linting, both type checkers, tests, branch
+coverage, and documentation validation.
+
+---
+
+## First Optimization
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/getting-started/
+
+# First Optimization
+
+This example optimizes the instructions of a small support-routing subject. It
+uses a deterministic reflection callable so it can be understood without a
+second model provider.
+
+## 1. Define examples
+
+```python
+from pydantic_gepa import Example
+
+train = [
+    Example(name="refund", inputs="Refund order 123", expected_output="refund"),
+    Example(name="shipping", inputs="Where is my parcel?", expected_output="shipping"),
+]
+
+validation = [
+    Example(name="refund-validation", inputs="I need my money back", expected_output="refund"),
+    Example(name="shipping-validation", inputs="Tracking has not updated", expected_output="shipping"),
+]
+```
+
+Training and validation are explicit. Validation should represent the behavior
+you want to generalize to, not simply repeat training examples.
+
+## 2. Define the subject
+
+```python
+active_instructions = "Route every request as other."
+
+def run_subject(text: str) -> str:
+    lowered = text.lower()
+    if "refund" in active_instructions.lower() and (
+        "refund" in lowered or "money back" in lowered
+    ):
+        return "refund"
+    if "shipping" in active_instructions.lower() and (
+        "parcel" in lowered or "tracking" in lowered
+    ):
+        return "shipping"
+    return "other"
+```
+
+In a real application, this function usually calls a Pydantic AI agent. The
+optimizer only requires an input-to-output callable.
+
+## 3. Bind a candidate component
+
+Pydantic AI agents can use `AgentInstructionsInjection`. For this plain callable
+we use a typed candidate context:
+
+```python
+from pydantic_gepa import CandidateContext, Component, DerivedValueInjection
+
+instructions = Component(
+    name="instructions",
+    initial_text="Route every request as other.",
+    kind="instructions",
+)
+instruction_context = CandidateContext[str]("instructions", instructions.initial_text)
+
+def subject(text: str) -> str:
+    global active_instructions
+    active_instructions = instruction_context.require()
+    return run_subject(text)
+
+injection = DerivedValueInjection(
+    component="instructions",
+    context=instruction_context,
+    required_components=("instructions",),
+    derive_value=lambda candidate: candidate["instructions"],
+)
+```
+
+An injection is active only while an example is evaluated. Context-local values
+prevent one candidate from becoming permanent application state.
+
+## 4. Optimize
+
+```python
+from pydantic_gepa import CallableReflectionModel, optimize
+from pydantic_gepa.configuration import BudgetConfig, GEPAConfig, ReflectionConfig
+
+config = GEPAConfig(
+    budget=BudgetConfig(max_metric_calls=12),
+    reflection=ReflectionConfig(
+        model=CallableReflectionModel(
+            lambda _prompt: "Route refund requests as refund and delivery questions as shipping."
+        )
+    ),
+)
+
+result = optimize(
+    train=train,
+    validation=validation,
+    task=subject,
+    score=lambda ctx: float(ctx.output == ctx.expected_output),
+    components=[instructions],
+    injections=[injection],
+    config=config,
+)
+```
+
+## 5. Inspect the evidence
+
+```python
+print(result.best_candidate.values["instructions"])
+print(result.best_score)
+print(result.validation_scores)
+
+for candidate in result.candidate_history:
+    print(candidate.candidate_id, candidate.parent_ids, candidate.score)
+```
+
+The result preserves candidate values, parent-child lineage, objective and
+validation scores, budget use, Pareto information when available, and artifact
+references. See [Results and lineage](results.md).
+
+The repository's runnable version is [`examples/basic.py`](examples.md#basic-instruction-optimization).
+
+---
+
+## Mental Model
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/concepts/
+
+# Mental Model
+
+The common pipeline is:
+
+```text
+Example -> Candidate -> Injection -> Runtime -> Evaluation -> GEPA -> Result
+```
+
+## Example
+
+An `Example` is one typed optimization sample. It contains application inputs,
+an optional expected output, metadata, identity, and binary or referenced
+attachments. pydantic-gepa converts examples into Pydantic Evals cases
+internally.
+
+## Component and candidate
+
+A `Component` describes one mutable dimension, such as `instructions` or
+`tool:search:param:query`. A `Candidate` contains concrete text values for one
+or more components, plus lineage metadata.
+
+The component is the schema of the search space. The candidate is one point in
+that space.
+
+## Injection
+
+An injection binds candidate values to the application for the duration of an
+evaluation. It answers: "Where does this optimized text go?"
+
+- `AgentInstructionsInjection` temporarily overrides Pydantic AI instructions.
+- `ModelOutputInjection` builds a candidate-specific Pydantic output type.
+- `DerivedValueInjection` derives arbitrary typed runtime state.
+- `NoopInjection` validates that a component exists when the task reads values
+  by another mechanism.
+
+## Runtime and evaluation
+
+`Runtime` executes one example under active injections. `Evaluation.output`
+runs the subject then scores its output. `Evaluation.controlled` lets an
+evaluator decide whether to call the subject zero, one, or several times.
+
+The high-level `optimize(...)` API builds this machinery for the common case.
+
+## Reflection
+
+GEPA uses failed and successful evaluation evidence to propose improved text.
+The reflection model receives selected examples, outputs, expected outputs,
+feedback, failure categories, and component context. `pydantic-gepa` normalizes
+that evidence and preserves structured side information.
+
+## Result
+
+`PydanticGEPAResult` is the stable output boundary. It normalizes backend data
+into typed candidates, scores, budget summaries, history, lineage, Pareto data,
+checkpoints, and artifacts.
+
+## Plans
+
+A `Plan` composes deterministic `Stage` objects. Use it when component groups
+must be optimized sequentially, share a global budget, or resume from durable
+checkpoints. A plan orchestrates optimizers; it is not a second candidate model.
+
+## Ecosystem boundary
+
+| Package | Owns |
+| --- | --- |
+| pydantic-gepa | Typed execution of GEPA optimization for Pydantic applications |
+| Autobench | Replayable benchmark and experiment evidence |
+| Autoptimize | Experiment planning, candidate validation, and promotion policy |
+
+The packages can integrate, but pydantic-gepa remains independently usable.
+
+---
+
+## Example Gallery
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/examples/
+
+# Example Gallery
+
+The repository examples are executable programs, not isolated snippets. Run
+them from the repository root after installing the `examples` extra:
+
+```bash
+uv sync --extra examples
+uv run python examples/basic.py
+```
+
+## Basic instruction optimization
+
+[`examples/basic.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/basic.py)
+shows the shortest common API:
+
+- typed `Example` values
+- one instruction `Component`
+- `AgentInstructionsInjection`
+- a callable scorer
+- typed GEPA configuration
+- normalized best-candidate output
+
+## Reusable optimization target
+
+[`examples/dot_optimization.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/dot_optimization.py)
+is an end-to-end multimodal structured extraction pipeline. It loads image
+examples, runs a Pydantic AI agent, optimizes instructions and output-field
+descriptions together, uses `model_field_accuracy`, and optionally emits
+Logfire traces.
+
+## Evaluation strategies
+
+[`examples/evaluation_strategies.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/evaluation_strategies.py)
+compares output scoring with evaluator-controlled repeated execution.
+
+## Tool schema optimization
+
+[`examples/schema_components.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/schema_components.py)
+collects tool and parameter descriptions into components and applies a
+candidate back to a copied tool definition.
+
+## Pydantic output schema optimization
+
+[`examples/model_schema_components.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/model_schema_components.py)
+collects nested Pydantic model descriptions and reconstructs the candidate
+JSON schema.
+
+## Staged orchestration
+
+[`examples/staged_grouped.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/staged_grouped.py)
+optimizes planner and generation component groups in ordered stages with
+per-stage and global budgets.
+
+## Checkpoint and resume
+
+[`examples/checkpoint_resume.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/checkpoint_resume.py)
+writes a durable run and proves that a compatible required resume returns the
+recorded result.
+
+## Events and progress
+
+[`examples/events_progress.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/events_progress.py)
+collects typed events while displaying Rich progress.
+
+## Low-level GEPA adapter
+
+[`examples/low_level_adapter.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/low_level_adapter.py)
+shows direct candidate-batch evaluation and reflective-dataset construction.
+Use this only when building an optimizer integration.
+
+## Recorder hook
+
+[`examples/recorder_hook.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/recorder_hook.py)
+connects candidate-batch evaluation to an external evidence recorder.
+
+## Experimental Optimize Anything
+
+[`examples/experimental_optimize_anything.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/experimental_optimize_anything.py)
+uses the isolated Optimize Anything backend while retaining the standard API.
+
+## CLI targets
+
+Any module-level `Optimization`, `Plan`, or zero-argument factory can be exposed
+as `module:attribute` and run through the [Click CLI](cli.md).
+
+---
+
+## Examples And Data
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/data/
+
+# Examples And Data
+
+## Typed examples
+
+`Example[InputsT, OutputT, MetadataT]` is the common data contract:
+
+```python
+from pydantic import BaseModel
+from pydantic_gepa import Example
+
+class Ticket(BaseModel):
+    text: str
+    customer_tier: str
+
+examples = [
+    Example(
+        id="ticket-001",
+        name="enterprise-refund",
+        inputs=Ticket(text="Refund invoice 42", customer_tier="enterprise"),
+        expected_output="refund",
+        metadata={"source": "held-out", "locale": "en"},
+    )
+]
+```
+
+The optimizer preserves the types of `inputs`, `expected_output`, and metadata
+through task and scorer callables. Pydantic Evals conversion happens inside the
+common API.
+
+## Identity
+
+Provide a stable `id` when the sample has a domain identity. Otherwise the
+library can derive a deterministic fingerprint from normalized content. Stable
+identity matters for caches, reflection evidence, reproducible splits, and
+cross-run recording.
+
+## Attachments
+
+Attachments let examples carry binary evidence without forcing the payload into
+JSON-like metadata:
+
+```python
+from pydantic_gepa import Attachment, Example
+
+image = Attachment.from_bytes(
+    b"...",
+    kind="image",
+    media_type="image/png",
+    reference="receipt.png",
+)
+
+example = Example(
+    inputs="Extract the receipt total.",
+    expected_output="19.95",
+    attachments=(image,),
+)
+```
+
+An attachment records its kind, reference, media type, byte size, and digest.
+The task remains responsible for translating a reference into the SDK-specific
+binary or URL type it consumes.
+
+## Train, validation, and test
+
+The one-shot API requires separate `train` and `validation` sequences. For a
+reusable deterministic split, use `DataSplit`:
+
+```python
+from pydantic_gepa import DataSplit
+
+split = DataSplit.partition(
+    examples,
+    validation_fraction=0.2,
+    test_fraction=0.1,
+    seed=17,
+)
+```
+
+Do not choose the best candidate on the same examples used to mutate it. Keep
+the test set untouched until final rescoring or promotion.
+
+## Scorer context
+
+A common score callable receives `EvaluationContext`:
+
+```python
+def score(ctx):
+    exact = float(ctx.output == ctx.expected_output)
+    return exact
+```
+
+The context exposes the example name, inputs, output, expected output, metadata,
+and execution duration. Return a float, a named metric mapping, or
+`MetricResult` for feedback and side information.
+
+## Advanced evaluator escape hatch
+
+Custom Pydantic Evals evaluators may be supplied through `evaluators=...` when
+their lifecycle is required. This is an advanced extension point; ordinary
+users should prefer score callables and built-in helpers such as
+`model_field_accuracy`.
+
+---
+
+## Components And Candidates
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/components/
+
+# Components And Candidates
+
+## Component
+
+A `Component` describes text GEPA may edit:
+
+```python
+from pydantic_gepa import Component
+
+instructions = Component(
+    name="agent.instructions",
+    initial_text="Answer the user's question.",
+    kind="instructions",
+    semantic_type="agent.instructions",
+    asset_ref="prompt://support-agent/main",
+    source="prompts/support.md",
+    optimizable=True,
+)
+```
+
+Important fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Stable key used in candidates and GEPA |
+| `initial_text` | Baseline human-readable value |
+| `kind` | Instructions, system prompt, schema description, or custom text |
+| `semantic_type` | Optional domain classification |
+| `asset_ref` | Optional external tracked-asset identity |
+| `injection_target` | Optional application binding hint |
+| `serialization` | Raw text by default; explicit JSON string when required |
+| `coupled_components` | Components that should be considered together |
+
+## Candidate
+
+A `Candidate` is one concrete assignment:
+
+```python
+from pydantic_gepa import Candidate
+
+candidate = Candidate(
+    id="candidate-7",
+    parent_id="candidate-3",
+    generation=2,
+    values={
+        "agent.instructions": "Classify first, then answer concisely.",
+        "tool:search:description": "Search verified documents only.",
+    },
+    metadata={"proposer": "reflection"},
+)
+```
+
+`fingerprint()` hashes normalized values. `save_yaml()` and `load_yaml()` provide
+a portable snapshot. Candidate models are frozen; create a new candidate rather
+than mutating evidence in place.
+
+## Catalog
+
+`ComponentCatalog` deduplicates by component name, produces the initial
+candidate, selects component groups, and merges schema-derived components:
+
+```python
+from pydantic_gepa import ComponentCatalog
+
+catalog = ComponentCatalog.from_components([instructions, search_description])
+prompt_catalog = catalog.select(include=["agent"], mode="prefix")
+initial = catalog.to_candidate(candidate_id="baseline")
+```
+
+Prefix selection treats `agent`, `agent.*`, and `agent:*` as one namespace.
+Use `mode="exact"` when only exact component names should match.
+
+## Component naming
+
+Use stable names that communicate ownership and target:
+
+```text
+agent.instructions
+agent.system_prompt
+tool:search:description
+tool:search:param:query
+output:ExtractionResult:param:customer_name
+```
+
+Do not put candidate versions into component names. Version and lineage belong
+to `Candidate.id`, `parent_id`, `generation`, and external asset references.
+
+## Raw and JSON-string serialization
+
+Raw text is the default and preferred representation. Use
+`serialization="json_string"` only when a backend contract explicitly expects
+a JSON-encoded string. Components encode before entering the candidate and
+decode at the injection boundary.
+
+---
+
+## Candidate Injection
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/injections/
+
+# Candidate Injection
+
+Candidate generation and application execution are separate concerns. An
+injection temporarily binds candidate values while an example runs.
+
+## Pydantic AI instructions
+
+```python
+from pydantic_gepa import AgentInstructionsInjection, Component
+
+instructions = Component(
+    name="instructions",
+    initial_text="Classify the ticket.",
+    kind="instructions",
+)
+
+injection = AgentInstructionsInjection(
+    agent=agent,
+    candidate_component=instructions,
+)
+```
+
+The injection uses the agent's `override(instructions=...)` context manager. It
+does not permanently mutate the agent.
+
+## Structured output type
+
+`ModelOutputInjection` owns both component collection and candidate-specific
+Pydantic model construction:
+
+```python
+from pydantic_gepa import ModelOutputInjection
+
+output_schema = ModelOutputInjection(ExtractionOutput)
+
+result = agent.run_sync(
+    prompt,
+    output_type=output_schema.require(),
+)
+```
+
+Pass `output_schema` in the optimization's `injections`, and merge
+`output_schema.components` into the component catalog. While an evaluation is
+active, `require()` returns the model type with candidate field descriptions.
+Outside that scope it returns the configured baseline model type.
+
+```python
+components = ComponentCatalog.from_components([instructions]).merge(
+    output_schema.components
+)
+```
+
+No user-written `build_output_type` function is needed.
+
+## Arbitrary typed values
+
+Use `CandidateContext` and `DerivedValueInjection` for routing policies,
+retriever configuration, or application-specific values:
+
+```python
+from pydantic_gepa import CandidateContext, DerivedValueInjection
+
+policy_context = CandidateContext[RoutingPolicy]("routing-policy")
+
+policy_injection = DerivedValueInjection(
+    component="routing.policy",
+    context=policy_context,
+    required_components=("routing.policy", "routing.fallback"),
+    derive_value=lambda values: RoutingPolicy(
+        primary=values["routing.policy"],
+        fallback=values["routing.fallback"],
+    ),
+)
+```
+
+The task reads `policy_context.require()`. Context variables keep concurrent
+evaluations isolated.
+
+## Validation-only injection
+
+`NoopInjection(component="prompt")` verifies that a candidate has the named
+component without changing application state. It is useful when the task reads
+the candidate through an external mechanism.
+
+## Lifecycle
+
+For every evaluation, the runtime:
+
+1. validates required components;
+2. enters all injection context managers;
+3. runs the task or evaluator-controlled calls;
+4. records outputs, metrics, feedback, and traces;
+5. exits contexts in reverse order, including failures.
+
+Do not implement injection by assigning global mutable state. Use the provided
+contexts or an application SDK's scoped override API.
+
+---
+
+## Evaluation
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/evaluation/
+
+# Evaluation
+
+Evaluation converts application behavior into optimization evidence. The common
+`optimize(...)` API builds an output evaluation internally. Use the explicit
+API when you need repeated calls, cache control, validators, or multiple metric
+roles.
+
+## Output scoring
+
+`Evaluation.output` runs the subject exactly once, then gives the result to the
+scorer:
+
+```python
+from pydantic_gepa import Candidate, Evaluation, Example, MetricResult, Runtime
+
+runtime = Runtime[str, str](
+    lambda text: text.strip().lower(),
+    identity="normalize-text-v1",
+)
+
+evaluation = Evaluation.output(
+    runtime,
+    lambda ctx: {
+        "accuracy": float(ctx.output == ctx.example.expected_output),
+        "length": MetricResult(
+            score=float(len(ctx.output or "")),
+            role="diagnostic",
+        ),
+    },
+    objective="accuracy",
+)
+
+result = evaluation.run(
+    Candidate(values={"instructions": "Normalize text."}),
+    Example(inputs="  HELLO ", expected_output="hello"),
+)
+```
+
+## Evaluator-controlled execution
+
+`Evaluation.controlled` gives the evaluator a `Context`. The evaluator may call
+`ctx.run()` or `await ctx.arun()` zero, one, or several times:
+
+```python
+from pydantic_gepa import Context
+
+def stability(ctx: Context[str, str, None]) -> MetricResult:
+    first = ctx.run()
+    second = ctx.run()
+    return MetricResult(
+        score=float(first == second),
+        feedback="Compared two independent executions.",
+        side_info={"first": first, "second": second},
+    )
+
+evaluation = Evaluation.controlled(runtime, stability)
+```
+
+This form supports robustness checks, pairwise judges, repeated sampling, and
+evaluators that reject an input without invoking the subject.
+
+## Metric roles
+
+`MetricResult` supports three roles:
+
+| Role | Purpose |
+| --- | --- |
+| `objective` | Drives candidate selection |
+| `constraint` | Represents a condition that must remain acceptable |
+| `diagnostic` | Preserved for analysis and reflection without becoming the objective |
+
+Use one named objective for GEPA. Preserve other metrics in feedback and side
+information instead of collapsing every concern into an unexplained scalar.
+
+```python
+MetricResult(
+    score=0.75,
+    role="objective",
+    feedback="Two of eight expected fields were wrong.",
+    side_info={"wrong_fields": ["postal_code", "country"]},
+)
+```
+
+## Failure and validation policy
+
+`EvaluationConfig` controls invalid candidates, task failures, evaluator
+failures, infrastructure errors, failure scores, score bounds, caching, and
+validation hooks:
+
+```python
+from pydantic_gepa import EvaluationConfig
+
+config = EvaluationConfig(
+    on_task_error="record",
+    on_evaluator_error="raise",
+    invalid_score="raise",
+    failure_score=0.0,
+    min_score=0.0,
+    max_score=1.0,
+)
+```
+
+NaN, infinity, missing objectives, and out-of-range objective values are never
+silently forwarded to GEPA.
+
+## Caching
+
+`InMemoryCache` and the `CacheStore` contract support repeated evaluation. The
+cache identity includes the candidate, example, runtime, evaluator, stage, and
+evaluation configuration. Mark an evaluation `deterministic=False` when output
+may vary; nondeterministic evaluation is not cached unless explicitly enabled.
+
+## Traces and artifacts
+
+During controlled evaluation, `Context.capture()` and `Context.acapture()` retain
+individual runtime attempts. `Context.artifact()` adds structured evidence for
+reflection or external recording. Keep feedback concise and place large or
+binary evidence in artifacts or attachments.
+
+## Final rescoring
+
+After search, evaluate a selected candidate against a stable split:
+
+```python
+from pydantic_gepa import rescore
+
+final = rescore(evaluation, result.best_candidate, split, policy="validation")
+```
+
+Use `arun_rescore` in an async application. Final test data should not influence
+candidate mutation or selection.
+
+---
+
+## Optimization
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/optimization/
+
+# Optimization
+
+## One-shot API
+
+Use `optimize(...)` when one function owns a complete run:
+
+```python
+result = optimize(
+    train=train_examples,
+    validation=validation_examples,
+    task=run_subject,
+    score=score_subject,
+    components=components,
+    injections=injections,
+    reflection="openai:gpt-5-mini",
+    budget=50,
+    max_concurrency=5,
+)
+```
+
+The shortcuts `reflection`, `budget`, `run`, and `on_event` construct a
+`GEPAConfig`. Do not combine them with an explicit `config=`.
+
+## Reusable pipeline
+
+Use `Optimization.from_examples(...)` when a target is reused from Python, the
+CLI, tests, or a larger orchestrator:
+
+```python
+from pydantic_gepa import Optimization
+
+pipeline = Optimization.from_examples(
+    examples=train_examples,
+    val_examples=validation_examples,
+    task=run_subject,
+    score=score_subject,
+    score_key="accuracy",
+    components=components,
+    injections=injections,
+    dataset_name="support-routing",
+)
+
+result = pipeline.run(config=config)
+```
+
+`PydanticGEPAOptimization` is a compatibility alias for `Optimization`.
+
+## What happens during a run
+
+1. Examples become internal Pydantic Evals cases.
+2. The component catalog produces the baseline candidate.
+3. GEPA selects examples and components for reflection.
+4. Candidate injections scope each task execution.
+5. Evaluators return objective, constraint, and diagnostic evidence.
+6. Reflection evidence is normalized for the proposer.
+7. New candidates preserve parent and generation lineage.
+8. Validation selects the best supported candidate.
+9. Backend output becomes `PydanticGEPAResult`.
+
+## Explicit initial candidate
+
+Pass an explicit candidate when starting from a persisted or externally
+tracked version:
+
+```python
+initial = Candidate(
+    id="prompt-v7",
+    values=components.values(),
+    metadata={"source": "asset-registry"},
+)
+
+pipeline = Optimization.from_examples(
+    examples=train,
+    val_examples=validation,
+    task=task,
+    score=score,
+    components=components,
+    initial_candidate=initial,
+)
+```
+
+## Objective selection
+
+The default objective is `ScoreObjective(score_key="score")`. Use a named key
+when the evaluator returns several metrics:
+
+```python
+from pydantic_gepa import ScoreObjective
+
+objective = ScoreObjective(
+    score_key="accuracy",
+    direction="maximize",
+    failure_score=0.0,
+)
+```
+
+## Concurrency
+
+`max_concurrency` limits example evaluation. Injection values are context-local,
+but the application objects behind them must also tolerate concurrent calls. Set
+the value to `1` for mutable or rate-limited subjects.
+
+## Custom backend seam
+
+`optimize_fn` exists for tests and advanced GEPA integration. Most applications
+should use the installed backend through typed `GEPAConfig`; untyped backend
+keyword bags are a migration path, not the preferred API.
+
+---
+
+## Results And Lineage
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/results/
+
+# Results And Lineage
+
+Every backend returns `PydanticGEPAResult`. The model normalizes GEPA output and
+orchestration metadata into one stable inspection boundary.
+
+## Core fields
+
+```python
+result.best_candidate
+result.best_score
+result.final_candidate
+result.validation_scores
+result.candidate_history
+result.total_metric_calls
+result.stop_reason
+```
+
+`best_candidate` is the candidate selected by the optimization objective.
+`final_candidate` may differ when a staged plan applies carry-forward or final
+rescoring rules.
+
+## Candidate history
+
+Candidate summaries preserve identity, parent identity, generation, values,
+score, and available deltas. This supports questions such as:
+
+- Which candidate introduced this text?
+- Which parent produced the winning branch?
+- Was an improvement visible on validation or only training?
+- Which components changed together?
+
+```python
+for candidate in result.candidate_history:
+    print(
+        candidate.candidate_id,
+        candidate.parent_ids,
+        candidate.generation,
+        candidate.score,
+    )
+```
+
+## Pareto evidence
+
+When the backend reports multi-objective or frontier information, the normalized
+result exposes:
+
+- `per_objective_best_candidates`
+- `objective_pareto_front`
+- `objective_scores`
+
+The common scalar objective remains explicit; Pareto evidence is not silently
+reduced to a single number.
+
+## Budget and artifacts
+
+`result.budget` and `total_metric_calls` explain search cost. `artifacts` and
+`checkpoints` point to durable files rather than embedding large payloads in the
+result model. `run_dir` and `run_id` connect the result to its owned run state.
+
+## Candidate tree
+
+If supplied by GEPA, `candidate_tree_dot` and `candidate_tree_html` preserve a
+renderable lineage tree. These are optional backend artifacts, not a required
+dependency for core result inspection.
+
+## Stable serialization
+
+```python
+payload = result.stable_dump()
+```
+
+`stable_dump()` excludes unstable raw backend objects and returns JSON-compatible
+data suitable for recording, inspection, and external orchestration. Use it at
+package boundaries instead of serializing `raw_gepa_result`.
+
+## Promotion is external
+
+A high optimization score is evidence, not an automatic production promotion.
+Autobench may record and compare the candidate; Autoptimize may run held-out
+validation and promotion policy. pydantic-gepa deliberately does not overwrite
+source prompts or deploy an agent.
+
+---
+
+## Typed GEPA Configuration
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/configuration/
+
+# Typed GEPA Configuration
+
+`GEPAConfig` is the supported configuration surface. Its nested models reject
+unknown and conflicting values before expensive model calls begin.
+
+```python
+from pydantic_gepa import GEPAConfig
+from pydantic_gepa.configuration import (
+    BudgetConfig,
+    EvaluationSetConfig,
+    MergeConfig,
+    ProgressConfig,
+    ReflectionConfig,
+    RunConfig,
+    SelectionConfig,
+    TrackingConfig,
+)
+
+config = GEPAConfig(
+    reflection=ReflectionConfig(
+        model="openai:gpt-5-mini",
+        minibatch_size=4,
+        skip_perfect_score=True,
+    ),
+    selection=SelectionConfig(
+        candidate="pareto",
+        frontier="hybrid",
+        component="round_robin",
+    ),
+    merge=MergeConfig(enabled=True, max_invocations=3),
+    budget=BudgetConfig(max_metric_calls=100),
+    run=RunConfig(id="support-v1", directory="runs/support-v1"),
+    tracking=TrackingConfig(track_best_outputs=True),
+    progress=ProgressConfig(display_bar=True),
+    evaluation_sets=EvaluationSetConfig(allow_same_train_validation=False),
+)
+```
+
+## ReflectionConfig
+
+Controls the reflection model, provider kwargs, minibatch size, perfect-score
+handling, prompt template, and custom proposer. The model may be an identifier,
+a `CallableReflectionModel`, or an integration-specific reflection adapter.
+
+## SelectionConfig
+
+Controls candidate, frontier, component, batch-sampler, validation, and
+acceptance strategies. Use typed values instead of passing backend-specific
+strings through arbitrary `**kwargs`.
+
+## MergeConfig
+
+Controls whether GEPA may merge candidate branches, how many merge invocations
+are allowed, and the validation-overlap floor.
+
+## BudgetConfig
+
+Limits metric calls and optional reflection cost, and configures stop behavior.
+Metric calls are the portable budget unit across model providers.
+
+## RunConfig
+
+Owns durable execution:
+
+- run identity and directory
+- `resume` and `fresh` behavior
+- checkpoint interval
+- compatibility validation
+- deterministic seed
+- evaluation cache policy
+- exception behavior
+
+See [Checkpoint and resume](state.md).
+
+## TrackingConfig
+
+Connects loggers, backend callbacks, typed observers, optional best-output
+tracking, and supported external tracking integrations. Observer failures may be
+configured independently from optimization failures.
+
+## ProgressConfig
+
+`display_bar=True` enables backend progress when supported. The Rich observer
+adds package-level stage and event progress.
+
+## EvaluationSetConfig
+
+The default rejects identical training and validation sets. Enabling overlap is
+an explicit compatibility choice, not a recommended evaluation design.
+
+## Callable reflection
+
+```python
+from pydantic_gepa import CallableReflectionModel
+
+reflection = CallableReflectionModel(
+    lambda prompt: "A more precise candidate",
+    retries=2,
+)
+```
+
+The adapter records requests, supplied or estimated usage, cost, retries,
+duration, and normalized failures.
+
+## Legacy options
+
+`GEPAConfig.from_legacy_kwargs()` maps known historical options and warns. It
+rejects unknown keys instead of forwarding an untyped bag. New code should
+construct typed models directly.
+
+---
+
+## Reflection And Feedback
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/reflection/
+
+# Reflection And Feedback
+
+Reflection is the step that turns evaluation evidence into proposed component
+text. Better evidence is usually more valuable than a larger mutation budget.
+
+## What reaches reflection
+
+The adapter can include:
+
+- example identity and inputs
+- expected and actual outputs
+- objective and secondary metrics
+- evaluator feedback and structured side information
+- assertions and normalized failures
+- captured runtime attempts and artifacts
+- current candidate values and selected components
+
+The normalized failure category is `None` for a non-failure. Failures may be
+classified as task, evaluator, assertion, infrastructure, or low-score evidence.
+
+## Metric feedback
+
+Return a `MetricResult` when a scalar alone would be ambiguous:
+
+```python
+return MetricResult(
+    score=0.5,
+    feedback="The route was correct, but the required account identifier was omitted.",
+    side_info={
+        "correct_route": True,
+        "missing_fields": ["account_id"],
+    },
+)
+```
+
+Feedback should identify observed behavior, not prescribe a brittle exact
+prompt. Side information should be serializable and focused on mutation-relevant
+evidence.
+
+## Reflection models
+
+### Model identifier
+
+```python
+ReflectionConfig(model="openai:gpt-5-mini")
+```
+
+### Callable
+
+```python
+CallableReflectionModel(lambda prompt: propose(prompt), retries=2)
+```
+
+The callable may be synchronous or asynchronous; the adapter presents GEPA's
+synchronous reflection contract.
+
+### Pydantic AI
+
+```python
+from pydantic_gepa.integrations.pydantic_ai import PydanticAIReflectionModel
+
+reflection = PydanticAIReflectionModel.from_model(
+    "openai:gpt-5-mini",
+    max_output_tokens=2_000,
+    timeout=30,
+    retries=2,
+)
+```
+
+Pydantic AI remains an optional import. The integration records reflection
+usage and cost when the provider exposes them.
+
+## Perfect scores
+
+`skip_perfect_score=True` avoids reflecting on examples that already satisfy
+the configured perfect score. This reduces cost and keeps reflection focused on
+useful errors.
+
+## Custom proposers
+
+A custom proposer is an advanced seam for systems that already own a mutation
+engine. It should consume normalized evidence and return component text using
+the component's serialization contract. Prefer the standard reflection model
+until evidence proves a custom proposer is necessary.
+
+---
+
+## Candidates And Concurrency
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/candidates-concurrency/
+
+# Candidates And Concurrency
+
+GEPA evaluates many candidate-example pairs. Correct isolation is part of the
+optimization contract, not only a performance setting.
+
+## Runtime isolation
+
+`Runtime` accepts a task, candidate scope, required components, optional
+isolation strategy, concurrency limit, candidate normalization, and a stable
+identity:
+
+```python
+runtime = Runtime(
+    run_subject,
+    required_components=("instructions",),
+    max_concurrency=5,
+    identity="support-agent-v2",
+)
+```
+
+Candidate injections use context managers and context variables. A candidate's
+instructions or output type are active only within its evaluation scope.
+
+## Application safety
+
+Context isolation does not make an arbitrary client thread-safe. Reduce
+concurrency when the subject:
+
+- mutates process-global state;
+- uses a non-concurrent local model or database session;
+- is constrained by provider rate limits;
+- depends on ordering between examples.
+
+## Batch evaluation
+
+The adapter may evaluate examples concurrently while preserving result order
+and case identity. Injection must therefore operate at example scope unless a
+custom isolation strategy proves batch scope is safe.
+
+## Candidate normalization
+
+Candidate values should be normalized before entering the runtime. The common
+component catalog handles raw and JSON-string serialization. Advanced runtimes
+may supply a normalization callable, but should preserve stable component names
+and text values expected by GEPA.
+
+## Determinism and cache
+
+Concurrency can reveal nondeterministic application behavior. Mark evaluations
+nondeterministic when appropriate and do not cache them by default. A stable
+runtime `identity` should change whenever behavior relevant to cached output
+changes.
+
+## Coupled components
+
+Some components only make sense together, such as a tool description and its
+parameter descriptions. Declare coupling in component metadata and use staged
+or grouped selection when independent mutation would produce invalid states.
+
+---
+
+## Plans And Stages
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/plans/
+
+# Plans And Stages
+
+`Plan` composes ordered optimization stages. Use it when one monolithic GEPA run
+would mix component responsibilities, budgets, or validation policies.
+
+```python
+from pydantic_gepa import Budget, Candidate, Plan, Stage
+from pydantic_gepa.orchestration import StageOutput
+
+def optimize_planner(candidate: Candidate, budget: int) -> StageOutput:
+    return StageOutput(
+        candidate=run_planner_optimizer(candidate, budget),
+        score=0.82,
+        metric_calls=budget,
+    )
+
+plan = Plan(
+    Stage(
+        "planner",
+        components=("planner.instructions",),
+        run=optimize_planner,
+        budget=Budget(max_metric_calls=20),
+        run_id="planner-v1",
+    ),
+    Stage(
+        "tools",
+        components=("tool:search", "tool:lookup"),
+        run=optimize_tools,
+        budget=Budget(max_metric_calls=30),
+        run_id="tools-v1",
+    ),
+    initial_candidate=baseline,
+    budget=Budget(max_metric_calls=50),
+)
+```
+
+## Stage contract
+
+A stage declares:
+
+- stable stage id and implementation id
+- components it may modify
+- frozen components it must preserve
+- stage budget and objective
+- optional seed candidate
+- optional rescoring function and stable id
+
+Its callable receives the current candidate and remaining metric-call budget,
+then returns `StageOutput` with a candidate, score, calls used, acceptance,
+history, and optional checkpoint.
+
+## Carry forward
+
+The plan decides whether accepted or final stage candidates carry into the next
+stage. Frozen component checks prevent a stage from silently changing values it
+does not own.
+
+## Global budget
+
+Per-stage budgets are capped by the plan's remaining global budget. A stage
+must report actual metric calls. The plan records stop reasons when budget or
+failure policy prevents later stages.
+
+## Aggregation and final rescore
+
+Plan scores may use mean or weighted aggregation. A final rescore can validate
+the assembled candidate after all stages, which is important because components
+that work separately may interact when combined.
+
+## When not to use a plan
+
+Use a single `Optimization` when all components share one evaluator, budget,
+and search strategy. Plans add value only when stage boundaries reflect actual
+ownership or validation boundaries.
+
+---
+
+## Checkpoint And Resume
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/state/
+
+# Checkpoint And Resume
+
+Durable execution belongs to an explicit run directory. It stores enough state
+to resume compatible work without pretending that changed code is the same run.
+
+```python
+from pydantic_gepa import RunConfig
+
+run = RunConfig(
+    id="support-2026-08-09",
+    directory="runs/support-2026-08-09",
+    resume="if_exists",
+    checkpoint_interval=10,
+    seed=17,
+)
+
+result = pipeline.run(config=config.model_copy(update={"run": run}))
+```
+
+## Resume modes
+
+- `never`: start without loading prior state.
+- `if_exists`: resume compatible state when present.
+- `required`: fail unless compatible resumable state exists.
+
+`fresh=True` requests a fresh owned run and conflicts with resume behavior that
+requires old state.
+
+## Compatibility
+
+Run manifests fingerprint the optimization definition, component set,
+callbacks, stages, scoring identity, and relevant configuration. Compatibility
+checks prevent stale checkpoints from being applied after meaningful code or
+configuration changes.
+
+Give reusable callables stable ids such as `run_id`, `rescore_id`, and runtime
+`identity`. Lambdas and renamed closures may be unsuitable for durable resume
+because their identity is harder to prove.
+
+## Atomic state
+
+Manifest, checkpoint, result, and event writes use owned run paths and atomic
+replacement. An interrupted write must not leave a partially valid result.
+
+## Required resume example
+
+```python
+first = plan.run(run=RunConfig(id="demo", directory="runs/demo"))
+
+same = plan.run(
+    run=RunConfig(
+        id="demo",
+        directory="runs/demo",
+        resume="required",
+    )
+)
+
+assert same == first
+```
+
+## What resume does not promise
+
+Resume does not make external model calls deterministic, reconstruct deleted
+provider data, or permit incompatible code to reuse old state. It restores the
+last compatible package-owned execution boundary.
+
+---
+
+## Pydantic AI
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/pydantic-ai/
+
+# Pydantic AI
+
+Pydantic AI integration has two independent roles: the application subject and
+the reflection model.
+
+## Optimize agent instructions
+
+```python
+from pydantic_ai import Agent
+from pydantic_gepa import AgentInstructionsInjection, Component, Example, optimize
+
+agent = Agent(
+    "openai:gpt-5-mini",
+    instructions="Route the support request.",
+    output_type=str,
+)
+
+instructions = Component(
+    name="instructions",
+    initial_text="Route the support request.",
+    kind="instructions",
+)
+
+def run_agent(text: str) -> str:
+    return agent.run_sync(text).output
+
+result = optimize(
+    train=train,
+    validation=validation,
+    task=run_agent,
+    score=lambda ctx: float(ctx.output == ctx.expected_output),
+    components=[instructions],
+    injections=[
+        AgentInstructionsInjection(
+            agent=agent,
+            candidate_component=instructions,
+        )
+    ],
+    reflection="openai:gpt-5-mini",
+    budget=50,
+)
+```
+
+The injection enters `agent.override(instructions=...)` for each evaluation.
+The baseline agent remains reusable after the run.
+
+## Optimize structured output descriptions
+
+```python
+from pydantic import BaseModel, Field
+from pydantic_gepa import ComponentCatalog, ModelOutputInjection
+
+class ExtractionOutput(BaseModel):
+    customer_name: str = Field(description="Customer name")
+    account_id: str = Field(description="Account identifier")
+
+output_schema = ModelOutputInjection(ExtractionOutput)
+catalog = ComponentCatalog.from_components([instructions]).merge(
+    output_schema.components
+)
+
+def extract(image) -> ExtractionOutput:
+    return agent.run_sync(
+        ["Extract the account data.", image],
+        output_type=output_schema.require(),
+    ).output
+```
+
+Pass both injections and the merged catalog to the optimization. The output
+injection reconstructs candidate Pydantic model types internally.
+
+## Reflection through Pydantic AI
+
+```python
+from pydantic_gepa.integrations.pydantic_ai import PydanticAIReflectionModel
+
+reflection = PydanticAIReflectionModel.from_model(
+    "openai:gpt-5-mini",
+    timeout=30,
+    retries=2,
+    max_output_tokens=2_000,
+)
+```
+
+You can also pass an existing string-output agent. Reflection records expose
+request count, token usage, duration, cost when available, and normalized
+errors.
+
+## Async subjects
+
+Pydantic-gepa recognizes awaitable task and score results. Use the ordinary
+async Pydantic AI API inside an async task; do not detect coroutines manually.
+
+## Tool optimization
+
+Pydantic AI tool definitions can be collected through the generic tool-schema
+surface described in [Schema optimization](schema-optimization.md). Candidate
+application produces copied definitions; it does not modify the original tool
+schema in place.
+
+## Optional dependency boundary
+
+Importing `pydantic_gepa` does not eagerly import Pydantic AI. Integration code
+lives under `pydantic_gepa.integrations.pydantic_ai` so generic applications can
+use candidates, evaluation, and orchestration without the SDK installed.
+
+---
+
+## Schema Optimization
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/schema-optimization/
+
+# Schema Optimization
+
+Descriptions in tool and output schemas affect how models choose tools and
+produce structured data. pydantic-gepa can expose those descriptions as normal
+candidate components.
+
+## Pydantic models
+
+```python
+from pydantic import BaseModel, Field
+from pydantic_gepa import collect_model_components
+
+class Address(BaseModel):
+    city: str = Field(description="City")
+    postal_code: str = Field(description="Postal code")
+
+class Order(BaseModel):
+    destination: Address
+    status: str = Field(description="Order status")
+
+catalog = collect_model_components(Order, model_name="Order")
+print(catalog.names())
+```
+
+Nested paths remain stable, including arrays and definitions. Typical keys are:
+
+```text
+output:Order:description
+output:Order:param:destination.city
+output:Order:param:destination.postal_code
+output:Order:param:status
+```
+
+## First-class output injection
+
+Prefer `ModelOutputInjection(Order)` in an optimization. It collects components,
+applies candidate descriptions, and exposes the active model type. You do not
+need to write a custom model subclass factory.
+
+## Tool definitions
+
+The generic `ToolDefinitionView` contract requires a name, optional description,
+and parameters JSON schema:
+
+```python
+catalog = collect_tool_components(search_tool)
+candidate = catalog.to_candidate()
+updated = apply_tool_schema_candidate(search_tool, candidate.values)
+```
+
+`collect_toolset_components` merges several tools. Component keys distinguish
+the tool description from individual parameters:
+
+```text
+tool:search:description
+tool:search:param:query
+tool:search:param:limit
+```
+
+## Applying candidates
+
+`apply_model_schema_candidate` and `apply_tool_schema_candidate` return candidate
+views and copied schemas. They preserve original definitions and report the
+description overrides that were actually applied.
+
+## Field-name fallback
+
+Fields without descriptions may use their field name as the initial component
+text. Disable `include_field_name_fallback` when only deliberate human-authored
+descriptions should be optimized.
+
+## Scope selection
+
+Schema catalogs are ordinary `ComponentCatalog` values. Select only tool
+descriptions, only output fields, or a specific prefix before a staged run:
+
+```python
+tool_components = catalog.select(include=["tool:"], mode="prefix")
+```
+
+## Validation
+
+After applying a candidate, validate both schema construction and real model
+outputs. A syntactically valid description candidate can still reduce tool
+choice or extraction quality.
+
+---
+
+## Multimodal Evidence
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/multimodal/
+
+# Multimodal Evidence
+
+`Example` attachments and typed inputs let the optimizer evaluate image, audio,
+document, and other binary-backed tasks without reducing them to text.
+
+## Referenced media
+
+Keep large media outside the candidate and reference it from typed input:
+
+```python
+from pydantic import BaseModel
+from pydantic_ai import ImageUrl
+from pydantic_gepa import Example
+
+class ExtractionInput(BaseModel):
+    image: ImageUrl
+
+example = Example(
+    id="receipt-42",
+    inputs=ExtractionInput(image=ImageUrl(url="https://example.test/receipt.png")),
+    expected_output=Receipt(total=19.95, currency="USD"),
+)
+```
+
+## Binary attachment metadata
+
+Use `Attachment.from_bytes` when the optimization dataset owns binary content:
+
+```python
+attachment = Attachment.from_bytes(
+    image_bytes,
+    kind="image",
+    media_type="image/png",
+    reference="receipt-42.png",
+)
+```
+
+The digest and size participate in stable evidence identity. The integration's
+encoder decides how content is represented to reflection; large binary payloads
+should not be embedded directly in reflection prompts.
+
+## Structured extraction
+
+Combine multimodal inputs with `ModelOutputInjection` and
+`model_field_accuracy`:
+
+```python
+score = model_field_accuracy("customer_name", "account_id", "document_id")
+```
+
+This measures field-level output quality while GEPA may optimize both agent
+instructions and field descriptions.
+
+## Pydantic AI evidence encoder
+
+`pydantic_gepa.integrations.pydantic_ai.evidence_encoder` understands supported
+Pydantic AI content parts. `register_evidence` extends an encoder explicitly for
+integration-specific payloads.
+
+## Operational limits
+
+- Prefer references or artifact stores for large files.
+- Never place secrets in attachment metadata or reflection feedback.
+- Keep provider-specific image conversion in the application adapter.
+- Include media identity in example ids so caches do not confuse changed files.
+
+See the full [`dot_optimization.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/dot_optimization.py)
+example.
+
+---
+
+## Low-Level Adapter
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/advanced-adapters/
+
+# Low-Level Adapter
+
+Most users should start with `optimize(...)` or `Optimization.from_examples`.
+The low-level adapter exists for optimizer authors, custom evaluation harnesses,
+and systems that need direct reflective datasets.
+
+## PydanticGEPAAdapter
+
+`PydanticGEPAAdapter.from_dataset(...)` binds an existing Pydantic Evals dataset,
+task, injections, objective, component catalog, concurrency, and optional
+recorder.
+
+```python
+adapter = PydanticGEPAAdapter.from_dataset(
+    dataset=dataset,
+    task=run_subject,
+    injections=injections,
+    objective=ScoreObjective(score_key="accuracy"),
+    components=components,
+    max_concurrency=5,
+)
+```
+
+This is intentionally advanced: here the caller owns Pydantic Evals `Dataset`
+and `Case` objects. The common API keeps them internal.
+
+## Evaluate a candidate batch
+
+```python
+batch = adapter.evaluate(
+    cases,
+    candidate.to_gepa_dict(),
+    capture_traces=True,
+)
+```
+
+The normalized batch contains ordered scores, outputs, failures, and optional
+trajectories.
+
+## Build reflection evidence
+
+```python
+reflective = adapter.make_reflective_dataset(
+    candidate=candidate.to_gepa_dict(),
+    eval_batch=batch,
+    components_to_update=["instructions"],
+)
+```
+
+Evidence is grouped by component and includes normalized case records, feedback,
+side information, traces, and failure categories.
+
+## PydanticGEPAOptimizer
+
+The optimizer wraps GEPA invocation and converts backend output into
+`PydanticGEPAResult`:
+
+```python
+optimizer = PydanticGEPAOptimizer(
+    adapter=adapter,
+    initial_candidate=candidate,
+)
+
+result = optimizer.optimize(
+    trainset=cases,
+    valset=validation_cases,
+    config=config,
+)
+```
+
+## Recorder seam
+
+Provide a candidate-evaluation recorder to forward normalized batches to an
+external evidence system. The recorder receives candidate values, batch cases,
+the report envelope, scores, and trajectories. It should not alter evaluation
+outcomes.
+
+## ASI construction
+
+`PydanticEvalsASIBuilder` converts selected evaluation records into GEPA
+reflective trajectories. `ComponentRecordSelector` and `SampleSelection`
+control which records become reflection context. ASI is adapter plumbing; common
+API users should reason about evaluation feedback, not build ASI manually.
+
+## Compatibility adapter
+
+`GEPAAdapter` and `EvaluationBatch` support legacy integration boundaries. New
+code should use typed adapter and result models rather than expanding loose
+callback dictionaries.
+
+---
+
+## Optimize Anything
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/optimize-anything/
+
+# Optimize Anything
+
+The Optimize Anything backend is experimental and isolated under:
+
+```python
+from pydantic_gepa.experimental.optimize_anything import (
+    PydanticOptimizeAnythingAdapter,
+    PydanticOptimizeAnythingOptimizer,
+)
+```
+
+It does not replace the standard GEPA backend.
+
+## Common API selection
+
+```python
+pipeline = Optimization.from_examples(
+    examples=train,
+    val_examples=validation,
+    task=task,
+    score=score,
+    components=components,
+    injections=injections,
+    backend="optimize_anything",
+    optimization_objective="Maximize support-routing accuracy.",
+    background="The candidate contains agent instructions and tool descriptions.",
+)
+
+result = pipeline.run(config=config)
+```
+
+The same examples, candidate model, injection system, evaluation harness, and
+result type are retained. Only the backend adapter and optimization objective
+change.
+
+## Low-level adapter
+
+Wrap a standard `PydanticGEPAAdapter` in
+`PydanticOptimizeAnythingAdapter`, then construct
+`PydanticOptimizeAnythingOptimizer`. This is useful for direct control over the
+experimental engine but is not required for common use.
+
+## Configuration
+
+Use `GEPAConfig`. Unsupported extra keyword options are rejected by the
+Optimize Anything backend rather than forwarded blindly. Objective and
+background may be set on pipeline construction or overridden for a run.
+
+## Stability boundary
+
+The upstream Optimize Anything API is less stable than standard GEPA. Keeping
+the backend in `experimental` means:
+
+- imports explicitly acknowledge instability;
+- standard API behavior can remain compatible;
+- backend-specific changes do not redefine common candidates or results;
+- applications can test both backends without duplicating evaluation code.
+
+Do not persist experimental backend implementation objects. Persist normalized
+candidates and `stable_dump()` results.
+
+See [`examples/experimental_optimize_anything.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/experimental_optimize_anything.py).
+
+---
+
+## Events And Observability
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/observability/
+
+# Events And Observability
+
+Optimization emits typed events independently of any one logging platform.
+Observers receive those events and may render progress, persist evidence, or
+forward telemetry.
+
+## Event observer
+
+```python
+from pydantic_gepa import Event
+
+events: list[Event] = []
+
+result = optimize(
+    ...,
+    on_event=events.append,
+)
+```
+
+Events identify the run, stage, kind, message, progress, candidate, score,
+budget, and structured payload when available.
+
+## Rich progress
+
+```python
+from pydantic_gepa.observers import rich_progress
+
+result = plan.run(on_event=[rich_progress()])
+```
+
+Rich rendering is a presentation observer. It does not own optimization state.
+
+## Logfire
+
+```python
+from pydantic_gepa.observers import logfire_observer
+
+observer = logfire_observer()
+result = plan.run(on_event=[observer])
+```
+
+Install the `logfire` extra and configure Logfire in the application. The
+observer adds optimization events to the existing telemetry environment; it
+does not configure credentials or globally instrument Pydantic AI.
+
+## Reflection records
+
+`CallableReflectionModel` and `PydanticAIReflectionModel` expose normalized
+records including duration, retries, usage, cost, and error state. These records
+help distinguish evaluation cost from reflection cost.
+
+## Backend callbacks
+
+`TrackingConfig.backend_callbacks` forwards supported GEPA callbacks. Use typed
+package observers for portable behavior and backend callbacks only when a GEPA
+feature has no normalized event yet.
+
+## External recorders
+
+`CandidateEvaluationRecorder`, `OptimizationEventRecorder`, and
+`GEPAEventBridge` define package boundaries for systems such as Autobench. A
+recorder should retain immutable evidence and must not modify candidate scores.
+
+## Failure policy
+
+Observer errors are configured separately through
+`TrackingConfig.observer_errors`. Production runs should make the choice
+explicit: telemetry loss may be non-fatal, while durable evidence recording may
+need fail-fast behavior.
+
+---
+
+## Command Line
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/cli/
+
+# Command Line
+
+The Click CLI runs typed Python targets. It does not introduce a second YAML
+optimization DSL.
+
+## Target syntax
+
+```text
+package.module:attribute
+```
+
+The attribute may be:
+
+- an `Optimization` instance;
+- a `Plan` instance;
+- a zero-argument factory returning either.
+
+```python
+# my_app/optimization.py
+pipeline = Optimization.from_examples(...)
+```
+
+## Inspect before running
+
+```bash
+pydantic-gepa my_app.optimization:pipeline inspect target
+pydantic-gepa my_app.optimization:pipeline inspect plan
+pydantic-gepa my_app.optimization:pipeline inspect config
+```
+
+Inspection resolves the target and renders typed configuration without running
+model calls.
+
+## Run
+
+```bash
+pydantic-gepa my_app.optimization:pipeline run \
+  --run-dir runs/support-v1 \
+  --run-id support-v1 \
+  --max-metric-calls 100 \
+  --reflection-model openai:gpt-5-mini \
+  --display-progress-bar
+```
+
+CLI flags map into typed configuration models. Invalid combinations fail before
+optimization.
+
+## Resume and fresh execution
+
+```bash
+pydantic-gepa my_app.optimization:pipeline resume \
+  --run-dir runs/support-v1 \
+  --run-id support-v1
+
+pydantic-gepa my_app.optimization:pipeline fresh \
+  --run-dir runs/support-v2 \
+  --run-id support-v2
+```
+
+`resume` requires compatible durable state. `fresh` starts a new owned run.
+
+## Inspect a result
+
+```bash
+pydantic-gepa my_app.optimization:pipeline inspect result \
+  runs/support-v1/result.json
+```
+
+The CLI renders normalized result fields with Rich. Machine consumers should
+read `stable_dump()` output from the run directory.
+
+## Importability
+
+Run from a directory where the target package is importable, or install the
+application into the environment. Keep expensive work out of module import;
+define it inside the target's run path or factory.
+
+## Exit behavior
+
+Target resolution, configuration validation, incompatible resume state, and
+optimization failures produce nonzero exits. This makes the CLI suitable for
+CI and repeatable operations.
+
+---
+
+## Autobench Bridge
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/autobench/
+
+# Autobench Bridge
+
+Pydantic-gepa can run independently. When Autobench is present, optimization
+evidence can be recorded beside benchmark runs without making Autobench part of
+the optimizer's common API.
+
+## Responsibility split
+
+| pydantic-gepa | Autobench |
+| --- | --- |
+| candidate generation and injection | immutable experiment records |
+| Pydantic Evals execution | semantic observations and assets |
+| GEPA reflection and selection | replay, compare, export, and policies |
+| normalized optimization result | durable evidence and run lineage |
+
+## Recorder hook
+
+The low-level adapter accepts a `CandidateEvaluationRecorder`. The recorder is
+called with the candidate, evaluated batch, normalized report, scores, and
+optional trajectories. An Autobench adapter can convert these into observations
+and artifacts.
+
+```python
+adapter = PydanticGEPAAdapter.from_dataset(
+    ...,
+    recorder=autobench_recorder,
+)
+```
+
+Keep the bridge in an integration layer. pydantic-gepa should not import
+Autobench merely to run an optimization.
+
+## Semantic mapping
+
+Useful evidence includes:
+
+- candidate and parent ids
+- component and tracked-asset references
+- objective, constraint, and diagnostic metrics
+- evaluation and reflection cost
+- selected examples and failure categories
+- candidate deltas and Pareto membership
+- run, stage, checkpoint, and artifact references
+
+Autobench assigns semantic types and persistence policy. pydantic-gepa retains
+typed optimization meaning.
+
+## Replay boundary
+
+Autobench replay can regenerate reports from recorded optimization evidence. It
+cannot replay a provider call unless its output was recorded. A pydantic-gepa
+checkpoint resumes optimizer execution; an Autobench record replays evidence.
+These are related but distinct guarantees.
+
+---
+
+## Autoptimize Contract
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/autoptimize/
+
+# Autoptimize Contract
+
+Autoptimize may use pydantic-gepa as one optimization backend. Pydantic-gepa
+does not own experiment planning or production promotion.
+
+## Inputs from Autoptimize
+
+- selected tracked assets and allowed component space
+- training, validation, and protected test evidence
+- objective and constraint definitions
+- budgets and concurrency policy
+- initial candidate and candidate lineage
+- requested backend and typed configuration
+
+## Outputs from pydantic-gepa
+
+- normalized best and final candidates
+- complete candidate history and parent links
+- objective and validation scores
+- budget use and stop reason
+- Pareto and per-objective evidence
+- checkpoints, artifacts, and stable result serialization
+
+## Promotion remains external
+
+Autoptimize should independently:
+
+1. rescore the candidate on held-out evidence;
+2. compare constraints and regressions to the baseline;
+3. run isolating or interaction experiments when assets changed together;
+4. generate a promotion recommendation;
+5. preserve rollback information;
+6. never overwrite application source solely because GEPA selected a candidate.
+
+## Backend neutrality
+
+Pydantic-gepa supplies standard GEPA and experimental Optimize Anything
+backends. Autoptimize may add other strategies without changing the candidate,
+evaluation, and result contracts.
+
+---
+
+## Architecture
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/architecture/
+
+# Architecture
+
+The package separates application-facing concepts from backend plumbing.
+
+```text
+examples + task + score
+          |
+          v
+ Optimization / optimize
+          |
+          v
+ components -> candidate -> injections -> runtime -> evaluation
+                                                |
+                                                v
+                                    Pydantic Evals harness
+                                                |
+                                                v
+                            standard GEPA / Optimize Anything
+                                                |
+                                                v
+                                  PydanticGEPAResult
+```
+
+## Layers
+
+### Common API
+
+`examples.py` exposes `Example`, `Optimization`, `optimize`, score context, and
+built-in scorers. It keeps Pydantic Evals internal for ordinary users.
+
+### Candidate model
+
+`candidates.py`, `components.py`, and `injections.py` define mutable search
+dimensions, concrete versions, selection, serialization, and scoped application
+binding.
+
+### Evaluation runtime
+
+`evaluation/` and `runtime/` own examples, controlled execution, caches,
+evidence encoding, traces, failure policy, and final rescoring.
+
+### GEPA adapter
+
+`adapter.py`, `asi.py`, `harness.py`, `reflection.py`, and `optimizer.py`
+translate normalized evaluation evidence into GEPA contracts and translate
+backend output back into stable result models.
+
+### Orchestration and state
+
+`orchestration/` composes stages and budgets. `state/` owns run manifests,
+checkpoints, compatibility, and atomic durable files.
+
+### Optional integrations
+
+`integrations/` contains SDK-specific adapters. Experimental upstream surfaces
+remain under `experimental/`.
+
+## Dependency direction
+
+The candidate and evaluation core do not depend on Autobench or Autoptimize.
+Integrations depend inward on stable contracts. External systems connect through
+recorders, observers, typed results, and stable dumps.
+
+## Design rules
+
+- Pydantic Evals is internal in the common API and public only as an advanced seam.
+- Configuration is typed; unknown backend kwargs are rejected.
+- Candidate application is scoped and concurrency-aware.
+- Results normalize backend objects before crossing package boundaries.
+- Experimental backends do not redefine standard public models.
+- Durable resume validates compatibility instead of trusting a directory name.
+
+---
+
+## Capability Map
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/capabilities/
+
+# Capability Map
+
+| Capability | Common API | Advanced API | Example |
+| --- | --- | --- | --- |
+| Typed examples | `Example` | Pydantic Evals cases | `basic.py` |
+| Explicit train/validation | `optimize` | `DataSplit` and rescore | `basic.py` |
+| Instruction optimization | `Component` + injection | custom candidate scope | `basic.py` |
+| Multiple components | `ComponentCatalog` | component selectors | `dot_optimization.py` |
+| Tool descriptions | schema collectors | schema path utilities | `schema_components.py` |
+| Output field descriptions | `ModelOutputInjection` | model schema application | `model_schema_components.py` |
+| Multimodal examples | typed inputs + `Attachment` | custom evidence encoder | `dot_optimization.py` |
+| Scalar scoring | score callable | Pydantic Evals evaluator | `basic.py` |
+| Multi-metric evidence | `MetricResult` mapping | objective selection | `evaluation_strategies.py` |
+| Controlled repeated calls | `Evaluation.controlled` | trace capture | `evaluation_strategies.py` |
+| Caching | `EvaluationConfig` | `CacheStore` | API reference |
+| Typed GEPA settings | `GEPAConfig` | legacy mapper | `basic.py` |
+| Reflection model adapter | model id or callable | Pydantic AI adapter | `basic.py` |
+| Candidate lineage | normalized result | candidate tree artifacts | result model |
+| Pareto evidence | normalized result | backend frontier controls | result model |
+| Staged optimization | `Plan` and `Stage` | custom stage runner | `staged_grouped.py` |
+| Global and stage budgets | `Budget` | custom stop policy | `staged_grouped.py` |
+| Checkpoint/resume | `RunConfig` | state store contracts | `checkpoint_resume.py` |
+| Typed events | observers | backend callback bridge | `events_progress.py` |
+| Rich progress | observer/config | custom observer | `events_progress.py` |
+| Logfire | optional observer | reflection records | `logfire_observer.py` |
+| CLI | Python target | custom Click integration | command-line docs |
+| Optimize Anything | backend selector | experimental adapter | `experimental_optimize_anything.py` |
+| External evidence recording | recorder hook | adapter report envelopes | `recorder_hook.py` |
+
+## Deliberate non-features
+
+- no production prompt deployment
+- no automatic source-file overwrite
+- no cloud control plane requirement
+- no pydantic-gepa YAML optimization DSL
+- no assumption that every candidate can be safely mixed
+- no claim of causal attribution from correlated candidate changes
+
+---
+
+## Python API
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/api-reference/
+
+# Python API
+
+The reference below is generated from the installed package. Start with the
+[first optimization](getting-started.md) for task-oriented guidance.
+
+## Public package
+
+::: pydantic_gepa
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+      separate_signature: true
+
+## Configuration
+
+::: pydantic_gepa.configuration
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+
+## Evaluation
+
+::: pydantic_gepa.evaluation
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+
+## Orchestration
+
+::: pydantic_gepa.orchestration
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+
+## Pydantic AI integration
+
+::: pydantic_gepa.integrations.pydantic_ai
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+
+## Optimize Anything experimental API
+
+::: pydantic_gepa.experimental.optimize_anything
+    options:
+      members_order: source
+      show_root_heading: true
+      show_source: true
+      show_signature_annotations: true
+
+---
+
+## API Stability
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/api-stability/
+
+# API Stability
+
+Pydantic-gepa is pre-1.0. Compatibility is managed by surface, not by treating
+every import as equally stable.
+
+## Common surface
+
+The intended application-facing vocabulary is:
+
+- `optimize` and `Optimization`
+- `Example`, `Attachment`, and `DataSplit`
+- `Component`, `ComponentCatalog`, and `Candidate`
+- candidate injections
+- `Evaluation`, `Runtime`, and `MetricResult`
+- `GEPAConfig` and nested typed configuration
+- `PydanticGEPAResult`
+- `Plan`, `Stage`, `Budget`, and `RunConfig`
+
+Changes to these names should include migration guidance and compatibility where
+practical.
+
+## Advanced surface
+
+Adapters, ASI builders, report envelopes, custom cache stores, recorder
+contracts, and backend callbacks are public for integration authors but may
+evolve faster than the common API.
+
+## Experimental surface
+
+Anything under `pydantic_gepa.experimental` may change in a minor release as its
+upstream backend changes. Experimental types still return common candidates and
+results where possible.
+
+## Compatibility aliases
+
+`PydanticGEPAOptimization` aliases `Optimization`. Compatibility helpers exist
+to migrate earlier code, but new docs use the shortest current names.
+
+## Persistence
+
+Persist candidate YAML and `PydanticGEPAResult.stable_dump()`, not raw GEPA
+objects, Pydantic Evals reports, context manager instances, or reflection model
+clients.
+
+## Deprecation policy
+
+Deprecated APIs should warn before removal and document the replacement.
+Unknown untyped configuration is rejected rather than silently accepted, which
+keeps upgrades observable.
+
+---
+
+## Migration
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/migration/
+
+# Migration
+
+## From direct Pydantic Evals construction
+
+Before:
+
+```python
+dataset = Dataset(cases=[], evaluators=[...])
+cases = [Case(inputs=..., expected_output=...)]
+adapter = PydanticGEPAAdapter.from_dataset(...)
+```
+
+After:
+
+```python
+pipeline = Optimization.from_examples(
+    examples=[Example(inputs=..., expected_output=...)],
+    val_examples=validation,
+    task=task,
+    score=score,
+    components=components,
+    injections=injections,
+)
+```
+
+Keep direct datasets only when custom Pydantic Evals evaluator lifecycle is the
+reason for the integration.
+
+## From loose candidate dictionaries
+
+Wrap values in `Candidate` and describe the search space with `Component` or
+`ComponentCatalog`. This adds serialization, stable identity, lineage, schema
+metadata, and injection validation.
+
+## From manual output-type factories
+
+Replace custom Pydantic model subclass builders with:
+
+```python
+output_schema = ModelOutputInjection(MyOutput)
+```
+
+Merge `output_schema.components`, include `output_schema` in injections, and
+pass `output_schema.require()` directly as the Pydantic AI `output_type`.
+
+## From untyped GEPA kwargs
+
+Replace standalone options with `GEPAConfig` nested models. The compatibility
+mapper recognizes known legacy names and rejects unknown values.
+
+## From direct GEPA optimizer calls
+
+Move candidate evaluation into `optimize(...)` or `Optimization`. Use the
+low-level adapter only if the integration must explicitly inspect evaluation
+batches or reflective datasets.
+
+## From one monolithic optimizer
+
+Use `Plan` only when component ownership, budgets, or validation differ by
+stage. Do not split a simple optimization solely for style.
+
+## From standard to Optimize Anything
+
+Set `backend="optimize_anything"`, provide objective/background, and import
+low-level backend types only from the experimental module. Keep the standard
+backend available until validation demonstrates parity for the application.
+
+---
+
+## Troubleshooting
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/troubleshooting/
+
+# Troubleshooting
+
+## GEPA or Pydantic Evals cannot be imported
+
+Install the runtime extra:
+
+```bash
+uv add "pydantic-gepa[integrations]"
+```
+
+The base package intentionally does not require every integration dependency.
+
+## Candidate is missing a component
+
+Ensure the component exists in both the initial candidate and component catalog.
+When using schema injection, merge `output_schema.components` into the catalog.
+
+## Candidate context has no active value
+
+Read `CandidateContext.require()` only while the task is running under its
+injection. Add the injection to the optimization and avoid reading it at module
+import time.
+
+## Structured output descriptions do not change
+
+Pass `output_type=output_schema.require()` to the Pydantic AI call. Supplying the
+original model class bypasses the candidate-specific type.
+
+## Scores are invalid
+
+Verify that the selected objective key exists, is numeric, is finite, and lies
+within configured bounds. Return `MetricResult` for diagnostic metadata rather
+than placing nonnumeric values in the objective.
+
+## Training and validation are rejected
+
+Provide distinct validation examples. Same-set validation requires an explicit
+compatibility setting and does not demonstrate generalization.
+
+## Resume is incompatible
+
+The target, callable identities, components, configuration, or stage graph
+changed. Start a fresh run directory unless compatibility can be restored
+honestly. Do not disable checks to reuse stale state.
+
+## Run appears stuck
+
+Enable `ProgressConfig(display_bar=True)` and a Rich or Logfire observer. Check
+provider timeouts, concurrency, retry behavior, and reflection model logs.
+Evaluation and reflection are separate model-call sources.
+
+## Event logs appear but GEPA progress does not
+
+Package events and backend progress are separate. Enable both the package Rich
+observer and `display_bar` when both views are desired.
+
+## CLI cannot import target
+
+Run from an environment where the application package is installed or on
+`sys.path`. Use `module:attribute`, not a filesystem path, and keep module import
+free of required network calls.
+
+## Type checker loses callable types
+
+Keep task, scorer, and example types explicit. Avoid replacing typed values with
+`Any` or generic dictionaries solely to satisfy an adapter. The common API is
+generic across input, output, and metadata types.
+
+---
+
+## Development
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/development/
+
+# Development
+
+## Environment
+
+```bash
+uv sync --extra dev --extra integrations --extra docs
+```
+
+## Quality gate
+
+```bash
+make prod
+make pre-commit
+```
+
+The project requires formatting, Ruff, basedpyright, ty, pytest, and 100% line
+and branch coverage. Tests must exercise behavior rather than merely execute
+branches.
+
+## Documentation
+
+```bash
+make docs
+make docs-serve
+```
+
+`make docs` regenerates `llms-full.txt`, stages exact Markdown sources for the
+Copy as Markdown action, and runs a strict Zensical build. Every public Markdown
+page must appear exactly once in navigation.
+
+## Repository layout
+
+```text
+src/pydantic_gepa/     package source
+tests/                 behavioral and contract tests
+examples/              runnable integrations
+docs/                  user documentation
+scripts/llms.py        documentation corpus generator
+.agents/skills/        agent-facing package skill
+```
+
+## Contribution rules
+
+- Prefer exact types, then generics, then `Any` only for truly dynamic boundaries.
+- Do not use `object` as a type-checking escape hatch.
+- Keep Pydantic Evals internal for common API changes.
+- Add typed configuration instead of forwarding arbitrary GEPA kwargs.
+- Preserve scoped candidate isolation under concurrency.
+- Put unstable upstream APIs under `experimental`.
+- Update runnable examples and docs with every public behavior change.
+- Run the complete quality gate before committing.
+
+## Release checks
+
+Build wheel and sdist, inspect their contents, verify optional dependency
+boundaries, run examples that do not require credentials, build docs strictly,
+and verify the hosted `llms.txt` and `llms-full.txt` endpoints.
+
+---
+
+## Changelog
+
+Canonical page: https://vcoderun.github.io/pydantic-gepa/changelog/
+
+# Changelog
+
+Release notes are maintained in the repository
+[`CHANGELOG.md`](https://github.com/vcoderun/pydantic-gepa/blob/main/CHANGELOG.md).
+
+## Unreleased documentation
+
+- comprehensive Zensical documentation site
+- common and advanced API walkthroughs
+- Pydantic AI, schema, multimodal, and Optimize Anything guides
+- capability, stability, migration, troubleshooting, and development references
+- `llms.txt`, generated `llms-full.txt`, and Copy as Markdown support
+- agent skill for repository and integration work
+
+Use the package version printed by `pydantic_gepa.__version__` when matching
+documentation to a release.

@@ -29,6 +29,7 @@ htmlcov/
 build/
 dist/
 site/
+docs/_markdown/
 
 # Editors and operating systems
 .DS_Store

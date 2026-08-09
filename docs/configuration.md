@@ -1,43 +1,94 @@
 # Typed GEPA Configuration
 
-`GEPAConfig` is the supported configuration path for the standard GEPA backend.
-It separates reflection, selection, merging, budgets, run behavior, tracking,
-progress, and evaluation-set policy so unknown or conflicting options fail
-before an optimization starts.
+`GEPAConfig` is the supported configuration surface. Its nested models reject
+unknown and conflicting values before expensive model calls begin.
 
 ```python
 from pydantic_gepa import GEPAConfig
 from pydantic_gepa.configuration import (
     BudgetConfig,
+    EvaluationSetConfig,
+    MergeConfig,
     ProgressConfig,
     ReflectionConfig,
+    RunConfig,
     SelectionConfig,
+    TrackingConfig,
 )
 
 config = GEPAConfig(
     reflection=ReflectionConfig(
         model="openai:gpt-5-mini",
-        model_kwargs={"temperature": 0.2},
         minibatch_size=4,
+        skip_perfect_score=True,
     ),
     selection=SelectionConfig(
         candidate="pareto",
         frontier="hybrid",
         component="round_robin",
     ),
+    merge=MergeConfig(enabled=True, max_invocations=3),
     budget=BudgetConfig(max_metric_calls=100),
+    run=RunConfig(id="support-v1", directory="runs/support-v1"),
+    tracking=TrackingConfig(track_best_outputs=True),
     progress=ProgressConfig(display_bar=True),
+    evaluation_sets=EvaluationSetConfig(allow_same_train_validation=False),
 )
-
-result = optimization.optimize(config=config)
 ```
 
-## Callable Reflection
+## ReflectionConfig
 
-`CallableReflectionModel` adapts ordinary synchronous or asynchronous
-callables to GEPA's synchronous language-model contract. It records requests,
-token estimates or supplied usage, cost, retries, durations, and normalized
-errors.
+Controls the reflection model, provider kwargs, minibatch size, perfect-score
+handling, prompt template, and custom proposer. The model may be an identifier,
+a `CallableReflectionModel`, or an integration-specific reflection adapter.
+
+## SelectionConfig
+
+Controls candidate, frontier, component, batch-sampler, validation, and
+acceptance strategies. Use typed values instead of passing backend-specific
+strings through arbitrary `**kwargs`.
+
+## MergeConfig
+
+Controls whether GEPA may merge candidate branches, how many merge invocations
+are allowed, and the validation-overlap floor.
+
+## BudgetConfig
+
+Limits metric calls and optional reflection cost, and configures stop behavior.
+Metric calls are the portable budget unit across model providers.
+
+## RunConfig
+
+Owns durable execution:
+
+- run identity and directory
+- `resume` and `fresh` behavior
+- checkpoint interval
+- compatibility validation
+- deterministic seed
+- evaluation cache policy
+- exception behavior
+
+See [Checkpoint and resume](state.md).
+
+## TrackingConfig
+
+Connects loggers, backend callbacks, typed observers, optional best-output
+tracking, and supported external tracking integrations. Observer failures may be
+configured independently from optimization failures.
+
+## ProgressConfig
+
+`display_bar=True` enables backend progress when supported. The Rich observer
+adds package-level stage and event progress.
+
+## EvaluationSetConfig
+
+The default rejects identical training and validation sets. Enabling overlap is
+an explicit compatibility choice, not a recommended evaluation design.
+
+## Callable reflection
 
 ```python
 from pydantic_gepa import CallableReflectionModel
@@ -48,25 +99,11 @@ reflection = CallableReflectionModel(
 )
 ```
 
-## Pydantic AI Reflection
+The adapter records requests, supplied or estimated usage, cost, retries,
+duration, and normalized failures.
 
-The optional integration accepts an existing string-output agent or constructs
-one from a Pydantic AI model. Importing the generic configuration and runtime
-modules does not import Pydantic AI.
+## Legacy options
 
-```python
-from pydantic_gepa.integrations.pydantic_ai import PydanticAIReflectionModel
-
-reflection = PydanticAIReflectionModel.from_model(
-    "openai:gpt-5-mini",
-    max_output_tokens=2_000,
-    timeout=30,
-    retries=2,
-)
-```
-
-## Legacy Options
-
-`GEPAConfig.from_legacy_kwargs()` exists only as a migration path. It emits a
-deprecation warning, maps every known standalone GEPA option, and rejects
-unknown keys rather than forwarding an untyped option bag.
+`GEPAConfig.from_legacy_kwargs()` maps known historical options and warns. It
+rejects unknown keys instead of forwarding an untyped bag. New code should
+construct typed models directly.
