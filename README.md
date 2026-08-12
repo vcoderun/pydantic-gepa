@@ -85,3 +85,10 @@ Run a configured Python target from the CLI:
 pydantic-gepa my_app.optimization:pipeline inspect target
 pydantic-gepa my_app.optimization:pipeline run --run-dir runs/demo
 ```
+
+## Acknowledgements
+
+`pydantic-gepa` builds on GEPA, Pydantic AI, and Pydantic Evals, and its design
+has benefited from studying other open-source optimization integrations. See
+[Acknowledgements And Design Influences](docs/acknowledgements.md) for explicit
+credits, project relationships, and licensing boundaries.

@@ -110,5 +110,6 @@ nav:
       - Migration: migration.md
       - Troubleshooting: troubleshooting.md
       - Development: development.md
+      - Acknowledgements: acknowledgements.md
       - Changelog: changelog.md
 strict: true
