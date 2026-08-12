@@ -2729,9 +2729,6 @@ feedback design, optimization workflows, or developer-experience comparisons:
   component discovery, candidate comparison, and proposal provenance.
 - [dspydantic](https://github.com/davidberenstein1957/dspydantic) was reviewed
   for typed structured-input and optimization integration patterns.
-- [vowel-optimization](https://github.com/vcoderun/vowel-optimization) informed
-  the use of structured failure feedback and reflective evaluation evidence in
-  an applied optimization pipeline.
 - [DeepEval](https://github.com/confident-ai/deepeval) was reviewed for agent
   evaluation, prompt optimization, tracing, and product-level integration
   patterns.
