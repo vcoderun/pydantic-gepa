@@ -228,14 +228,23 @@ class Evaluation(Generic[InputsT, OutputT, MetadataT]):
             score = value.score
             feedback = value.feedback
             side_info = value.side_info
+            semantic_type = value.semantic_type
+            unit = value.unit
+            direction = value.direction
         elif isinstance(value, bool):
             score = 1.0 if value else 0.0
             feedback = None
             side_info = {}
+            semantic_type = None
+            unit = None
+            direction = None
         elif isinstance(value, int | float):
             score = float(value)
             feedback = None
             side_info = {}
+            semantic_type = None
+            unit = None
+            direction = None
         else:
             return self._invalid_metric(name, f"Metric '{name}' is not a numeric scalar.")
 
@@ -250,6 +259,9 @@ class Evaluation(Generic[InputsT, OutputT, MetadataT]):
             role=role,
             feedback=feedback,
             side_info=side_info,
+            semantic_type=semantic_type,
+            unit=unit,
+            direction=direction,
         )
 
     def _invalid_metric(self, name: str, message: str) -> MetricResult:

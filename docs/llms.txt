@@ -2,7 +2,7 @@
 
 > Typed GEPA optimization for Pydantic applications. Define typed examples,
 > candidate components, application bindings, and evaluation once; run standard
-> GEPA or the experimental Optimize Anything backend without exposing ordinary
+> GEPA or experimental Optimize Anything Omni engines without exposing ordinary
 > users to Pydantic Evals plumbing.
 
 Documentation: https://vcoderun.github.io/pydantic-gepa/
@@ -35,7 +35,7 @@ Full documentation corpus: https://vcoderun.github.io/pydantic-gepa/llms-full.tx
 - [Pydantic AI](https://vcoderun.github.io/pydantic-gepa/pydantic-ai/)
 - [Schema Optimization](https://vcoderun.github.io/pydantic-gepa/schema-optimization/)
 - [Multimodal Evidence](https://vcoderun.github.io/pydantic-gepa/multimodal/)
-- [Optimize Anything](https://vcoderun.github.io/pydantic-gepa/optimize-anything/)
+- [Optimize Anything Omni](https://vcoderun.github.io/pydantic-gepa/optimize-anything/): typed engines, compositions, budgets, held-out evaluation, durable pipelines, and migration
 - [Command Line](https://vcoderun.github.io/pydantic-gepa/cli/)
 
 ## Reference

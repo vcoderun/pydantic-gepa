@@ -1,6 +1,13 @@
 from __future__ import annotations as _annotations
 
-from .optimize_anything import (
+from .adapter import (
+    CandidateCodec,
+    OptimizationState,
+    PydanticOptimizeAnythingAdapter,
+    SideInfo,
+)
+from .execution import OptimizeAnythingFn, PydanticOptimizeAnythingOptimizer
+from .models import (
     AdaptiveSequential,
     AutoResearchOptions,
     BestOf,
@@ -14,13 +21,9 @@ from .optimize_anything import (
     MetaHarnessOptions,
     OptimizationTask,
     OptimizeAnythingConfig,
-    OptimizeAnythingFn,
     Parallel,
     Pipeline,
-    PydanticOptimizeAnythingAdapter,
-    PydanticOptimizeAnythingOptimizer,
     Sequential,
-    SideInfo,
     Single,
     Vote,
 )
@@ -30,6 +33,7 @@ __all__ = (
     "AutoResearchOptions",
     "BestOf",
     "BestOfNOptions",
+    "CandidateCodec",
     "CandidateMode",
     "Composition",
     "CustomEngine",
@@ -37,6 +41,7 @@ __all__ = (
     "EngineResult",
     "EvaluationServer",
     "MetaHarnessOptions",
+    "OptimizationState",
     "OptimizeAnythingConfig",
     "OptimizationTask",
     "OptimizeAnythingFn",

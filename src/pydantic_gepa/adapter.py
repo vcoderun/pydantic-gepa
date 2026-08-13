@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from typing import Generic, Protocol, TypeVar, cast, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SkipValidation
 
 from .asi import (
     PydanticEvalsASIBuilder,
@@ -22,12 +22,41 @@ from .objectives import ScoreMappingCarrier, ScoreObjective
 from .recorder import CandidateEvaluationRecorder
 
 DataInstT = TypeVar("DataInstT")
+EventDataT_contra = TypeVar("EventDataT_contra", contravariant=True)
 RolloutOutputT = TypeVar("RolloutOutputT")
 EvaluatorT = TypeVar("EvaluatorT")
 ProposalFn = Callable[
     [dict[str, str], Mapping[str, Sequence[Mapping[str, SerializableValue]]], list[str]],
     dict[str, str],
 ]
+
+
+class EvaluationEvents(Protocol[EventDataT_contra, RolloutOutputT]):
+    def started(
+        self,
+        *,
+        candidate: Mapping[str, str],
+        batch: Sequence[EventDataT_contra],
+    ) -> str: ...
+
+    def completed(
+        self,
+        *,
+        evaluation_id: str,
+        candidate: Mapping[str, str],
+        batch: Sequence[EventDataT_contra],
+        report: ReportEnvelope,
+        evaluation: EvaluationBatch[PydanticEvalTrajectory, RolloutOutputT | None],
+    ) -> None: ...
+
+    def failed(
+        self,
+        *,
+        evaluation_id: str,
+        candidate: Mapping[str, str],
+        batch: Sequence[EventDataT_contra],
+        error: BaseException,
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -66,6 +95,7 @@ class PydanticGEPAAdapter(
     recorder: (
         CandidateEvaluationRecorder[DataInstT, ReportEnvelope, PydanticEvalTrajectory] | None
     ) = None
+    events: SkipValidation[EvaluationEvents[DataInstT, RolloutOutputT]] | None = None
 
     @classmethod
     def from_dataset(
@@ -103,8 +133,27 @@ class PydanticGEPAAdapter(
         capture_traces: bool = False,
     ) -> EvaluationBatch[PydanticEvalTrajectory, RolloutOutputT | None]:
         active_candidate = self.normalize_candidate(candidate)
-        with self.injection_scope(active_candidate):
-            report = self.harness.evaluate(batch)
+        event_context = (
+            None
+            if self.events is None
+            else (
+                self.events,
+                self.events.started(candidate=active_candidate, batch=batch),
+            )
+        )
+        try:
+            with self.injection_scope(active_candidate):
+                report = self.harness.evaluate(batch)
+        except BaseException as exc:
+            if event_context is not None:
+                events, evaluation_id = event_context
+                events.failed(
+                    evaluation_id=evaluation_id,
+                    candidate=active_candidate,
+                    batch=batch,
+                    error=exc,
+                )
+            raise
 
         outputs: list[RolloutOutputT | None] = []
         scores: list[float] = []
@@ -143,13 +192,23 @@ class PydanticGEPAAdapter(
                 trajectories=list(trajectories) if trajectories is not None else None,
             )
 
-        return EvaluationBatch(
+        evaluation = EvaluationBatch(
             outputs=outputs,
             scores=scores,
             trajectories=trajectories,
             objective_scores=objective_scores,
             num_metric_calls=len(scores),
         )
+        if event_context is not None:
+            events, evaluation_id = event_context
+            events.completed(
+                evaluation_id=evaluation_id,
+                candidate=active_candidate,
+                batch=batch,
+                report=report,
+                evaluation=evaluation,
+            )
+        return evaluation
 
     @contextmanager
     def injection_scope(self, candidate: Mapping[str, str]) -> Iterator[None]:
@@ -222,6 +281,7 @@ def _report_failures(report: ReportCases | ReportFailures) -> list[ReportCaseRec
 
 __all__ = (
     "DataInstT",
+    "EvaluationEvents",
     "PydanticGEPAAdapter",
     "RolloutOutputT",
 )

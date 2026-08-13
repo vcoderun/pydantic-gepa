@@ -4,7 +4,7 @@ import builtins
 import sys
 import types
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import pytest
@@ -15,6 +15,7 @@ from pydantic_gepa import (
     Candidate,
     CandidateComponent,
     ComponentCatalog,
+    DataSplit,
     EvaluationContext,
     Example,
     MetricResult,
@@ -33,6 +34,8 @@ from pydantic_gepa.configuration import (
     ReflectionConfig,
 )
 from pydantic_gepa.experimental.optimize_anything import (
+    Engine,
+    OptimizeAnythingConfig,
     PydanticOptimizeAnythingAdapter,
     PydanticOptimizeAnythingOptimizer,
 )
@@ -291,6 +294,17 @@ def test_example_pipeline_can_use_optimize_anything_backend(
     assert pipeline.objective == ScoreObjective(score_key="accuracy")
     assert result.best_candidate.values == {"instructions": component.initial_value}
     assert result.best_score == 1.0
+    standard = PydanticGEPAOptimization.from_examples(
+        examples=examples,
+        val_examples=examples,
+        task=parse_output,
+        score=lambda _ctx: 1.0,
+        optimize_fn=fake_optimize,
+    )
+    with pytest.raises(ConfigurationError, match="requires backend='optimize_anything'"):
+        standard.optimize(
+            config=OptimizeAnythingConfig(engine=Engine.gepa(candidate_mode="text", max_evals=2))
+        )
     with pytest.raises(ConfigurationError, match="Unsupported Optimize Anything options"):
         pipeline.optimize(unknown_backend_option=True)
 
@@ -303,6 +317,23 @@ def test_example_pipeline_validates_score_sources_and_optional_dependency(
         PydanticGEPAOptimization.from_examples(
             examples=[Example(inputs=_Input(text="Ada:1"))],
             task=parse_output,
+        )
+    examples = [Example(inputs=_Input(text="Ada:1"))]
+    with pytest.raises(ValueError, match="data cannot be combined"):
+        PydanticGEPAOptimization.from_examples(
+            examples=examples,
+            data=DataSplit.from_sets(
+                train=examples,
+                validation=examples,
+                allow_train_validation_overlap=True,
+            ),
+            task=parse_output,
+            score=lambda _ctx: 1.0,
+        )
+    with pytest.raises(ValueError, match="Provide examples or data"):
+        PydanticGEPAOptimization.from_examples(
+            task=parse_output,
+            score=lambda _ctx: 1.0,
         )
 
     original_import = builtins.__import__
@@ -358,7 +389,7 @@ def test_optimize_anything_backend_reports_missing_gepa_dependency(
     monkeypatch.delitem(sys.modules, "gepa.optimize_anything", raising=False)
     monkeypatch.setattr(builtins, "__import__", missing_gepa_import)
 
-    with pytest.raises(OptimizationDependencyError, match="GEPA is not installed"):
+    with pytest.raises(OptimizationDependencyError, match="does not provide the Optimize Anything"):
         pipeline.optimize(allow_same_train_val=True)
 
 
@@ -458,7 +489,8 @@ def fake_optimize_anything(**kwargs: Any) -> _RawResult:
     assert kwargs["objective"] == "Maximize accuracy on the evaluation dataset."
     assert kwargs["background"] == "Use the benchmark records to improve extraction instructions."
     config = kwargs["config"]
-    assert config.engine.max_metric_calls == 7
+    assert config.engine == "gepa"
+    assert config.max_evals == 7
 
     dataset = kwargs["dataset"]
     valset = kwargs["valset"]
@@ -492,7 +524,11 @@ def fake_optimize_anything(**kwargs: Any) -> _RawResult:
             }
         ]
     }
-    return _RawResult(best_candidate=dict(kwargs["seed_candidate"]), best_score=1.0)
+    return _RawResult(
+        best_candidate=dict(kwargs["seed_candidate"]),
+        best_score=1.0,
+        total_evals=7,
+    )
 
 
 def install_fake_pydantic_evals(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -631,3 +667,6 @@ def fake_score(value: Any) -> FakeScore:
 class _RawResult:
     best_candidate: dict[str, str]
     best_score: float
+    total_evals: int = 1
+    eval_log: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)

@@ -33,12 +33,17 @@ progress = [
     "rich>=13",
 ]
 integrations = [
-    "gepa>=0.1.1",
+    "gepa>=0.1.4,<0.2",
+    "pydantic-ai>=0.1.0",
+    "pydantic-evals>=0.1.0",
+]
+optimize-anything = [
+    "gepa[full]>=0.1.4,<0.2",
     "pydantic-ai>=0.1.0",
     "pydantic-evals>=0.1.0",
 ]
 examples = [
-    "gepa>=0.1.1",
+    "gepa[full]>=0.1.4,<0.2",
     "logfire>=3",
     "pydantic-ai>=0.1.0",
     "pydantic-evals>=0.1.0",
@@ -46,7 +51,10 @@ examples = [
 ]
 dev = [
     "basedpyright",
+    "gepa>=0.1.4,<0.2",
     "pre-commit",
+    "pydantic-ai>=0.1.0",
+    "pydantic-evals>=0.1.0",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",
@@ -79,9 +87,13 @@ exclude = [
     "/.agents",
     "/AGENTS.md",
     "/docs/_markdown",
+    "/outputs",
     "/site",
     "/uv.lock",
 ]
+
+[tool.uv.sources]
+gepa = { git = "https://github.com/gepa-ai/gepa.git", rev = "81dbae904bed94f5f3b8b4c704c0a81c7510b986" }
 
 [tool.ruff]
 line-length = 100

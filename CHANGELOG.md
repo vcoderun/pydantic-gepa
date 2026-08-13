@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Added the typed Optimize Anything Omni engine, composition, result, budget, and event contracts.
+- Added common ordered lifecycle events for standard GEPA, Optimize Anything engines and
+  compositions, staged plans, evaluation cases, selections, budgets, checkpoints, and terminal
+  outcomes, including occurrence timestamps and execution correlation.
+- Added typed resource-specific evaluation, optimizer, and aggregate cost evidence plus normalized
+  candidate/component lineage for external evidence systems.
+- Deprecated `autobench_observer()` in favor of Autobench's native pydantic-gepa instrumentor or
+  the backend-neutral `callback_observer()` helper.
+
 All notable changes to this project are documented here. The project follows
 Semantic Versioning; experimental APIs may change between minor releases.
 

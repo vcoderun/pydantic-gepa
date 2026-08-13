@@ -9,8 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, SkipValidation, model_validat
 
 from ..adapter import ProposalFn
 from ..errors import PydanticGEPAError
-from ..events import Observer, ObserverPolicy, compose_observers
-from ..recorder import GEPAEventBridge
+from ..events import Observer, ObserverPolicy
 from ..reflection import ReflectionFunction
 from ..values import JsonValue, ReprSerializable, SerializableValue
 
@@ -169,17 +168,6 @@ class GEPAConfig(BaseModel):
             stop_callbacks = self.budget.stop[0]
         else:
             stop_callbacks = self.budget.stop
-        callbacks: tuple[ReprSerializable, ...] = self.tracking.backend_callbacks
-        if self.tracking.observers:
-            callbacks += (
-                GEPAEventBridge(
-                    run_id=self.run.id,
-                    on_event=compose_observers(
-                        *self.tracking.observers,
-                        on_error=self.tracking.observer_errors,
-                    ),
-                ),
-            )
         return {
             "reflection_lm": reflection_model,
             "reflection_lm_kwargs": self.reflection.model_kwargs or None,
@@ -200,7 +188,7 @@ class GEPAConfig(BaseModel):
             "stop_callbacks": stop_callbacks,
             "logger": self.tracking.logger,
             "run_dir": str(self.run.directory) if self.run.directory is not None else None,
-            "callbacks": callbacks or None,
+            "callbacks": self.tracking.backend_callbacks or None,
             "use_wandb": self.tracking.use_wandb,
             "wandb_api_key": self.tracking.wandb_api_key,
             "wandb_init_kwargs": self.tracking.wandb_init or None,

@@ -76,7 +76,12 @@ connects candidate-batch evaluation to an external evidence recorder.
 ## Experimental Optimize Anything
 
 [`examples/experimental_optimize_anything.py`](https://github.com/vcoderun/pydantic-gepa/blob/main/examples/experimental_optimize_anything.py)
-uses the isolated Optimize Anything backend while retaining the standard API.
+uses the isolated Optimize Anything Omni backend through the high-level
+`Example`/`DataSplit` API. It runs a real GEPA engine, evaluates protected test
+data outside optimization, composes deterministic custom engines as
+`BestOf -> Single`, prints branch and continuation lineage, and shows a typed
+AutoResearch declaration. It uses a local Pydantic AI function model and needs
+no API key.
 
 ## CLI targets
 

@@ -61,6 +61,24 @@ stage. Do not split a simple optimization solely for style.
 
 ## From standard to Optimize Anything
 
-Set `backend="optimize_anything"`, provide objective/background, and import
-low-level backend types only from the experimental module. Keep the standard
-backend available until validation demonstrates parity for the application.
+Set `backend="optimize_anything"` when constructing `Optimization`, then pass
+the typed experimental configuration:
+
+```python
+from pydantic_gepa.experimental.optimize_anything import (
+    Engine,
+    OptimizeAnythingConfig,
+)
+
+result = optimization.optimize(
+    config=OptimizeAnythingConfig(
+        engine=Engine.gepa(gepa_config),
+    )
+)
+```
+
+Passing `GEPAConfig` directly to this backend remains a one-cycle deprecated
+compatibility path and means one GEPA engine. Use `composition=` for
+sequential, parallel, best-of, vote, adaptive, or Omni pipeline behavior. Keep
+the standard backend available until held-out evidence demonstrates parity for
+the application.

@@ -119,6 +119,13 @@ class FileRunStore:
         self._require_owned()
         return self._load_model(path, model)
 
+    def load_state(self) -> RunState | None:
+        path = self.directory / "state.json"
+        if not path.exists():
+            return None
+        self._require_owned()
+        return self._load_model(path, RunState)
+
     def reset(self) -> None:
         self._require_owned()
         for name in _OWNED_FILES:

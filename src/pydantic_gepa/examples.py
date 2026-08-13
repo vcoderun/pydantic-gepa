@@ -3,7 +3,7 @@ from __future__ import annotations as _annotations
 import json
 import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Generic, Literal, Protocol, TypeAlias, TypeVar, cast, runtime_checkable
 
 from pydantic import BaseModel
@@ -13,9 +13,11 @@ from .candidates import Candidate, CandidateComponent
 from .components import ComponentCatalog
 from .configuration import ConfigurationError, GEPAConfig, RunConfig
 from .configuration.models import BudgetConfig, ReflectionConfig, TrackingConfig
+from .evaluation.data import DataSplit
 from .evaluation.models import Example
 from .events import Observer
 from .experimental.optimize_anything import (
+    OptimizeAnythingConfig,
     OptimizeAnythingFn,
     PydanticOptimizeAnythingAdapter,
     PydanticOptimizeAnythingOptimizer,
@@ -148,6 +150,7 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
     trainset: list[EvalCaseView[InputsT, OutputT, MetadataT]]
     valset: list[EvalCaseView[InputsT, OutputT, MetadataT]]
     initial_candidate: Candidate
+    testset: list[EvalCaseView[InputsT, OutputT, MetadataT]] = field(default_factory=list)
     backend: OptimizationBackend = "standard"
 
     @property
@@ -160,11 +163,13 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
     def from_examples(
         cls,
         *,
-        examples: Sequence[Example[InputsT, OutputT, MetadataT]],
+        examples: Sequence[Example[InputsT, OutputT, MetadataT]] | None = None,
+        data: DataSplit[InputsT, OutputT, MetadataT] | None = None,
         task: Callable[[InputsT], OutputT],
         score: ScoreFunction[InputsT, OutputT, MetadataT] | None = None,
         score_key: str = "score",
         val_examples: Sequence[Example[InputsT, OutputT, MetadataT]] | None = None,
+        test_examples: Sequence[Example[InputsT, OutputT, MetadataT]] = (),
         dataset_name: str | None = None,
         injections: Sequence[CandidateInjection] = (),
         components: ComponentCatalog | Sequence[CandidateComponent] | None = None,
@@ -179,20 +184,32 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
     ) -> Optimization[InputsT, OutputT, MetadataT]:
         if score is None and not evaluators:
             raise ValueError("Either score or evaluators must be provided.")
+        if data is not None and (examples is not None or val_examples is not None or test_examples):
+            raise ValueError(
+                "data cannot be combined with examples, val_examples, or test_examples."
+            )
+        if data is None and examples is None:
+            raise ValueError("Provide examples or data.")
+
+        train_examples = data.train if data is not None else tuple(examples or ())
+        active_test_examples = data.test if data is not None else test_examples
 
         case_type, dataset_type, evaluator_type, evaluation_reason_type = _load_pydantic_evals()
-        trainset = [_to_case(case_type, example) for example in examples]
-        if val_examples is None:
+        trainset = [_to_case(case_type, example) for example in train_examples]
+        if data is not None:
+            active_val_examples = data.validation
+        elif val_examples is None:
             warnings.warn(
                 "Reusing training examples for validation is deprecated; pass val_examples "
                 "explicitly or use DataSplit.",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            active_val_examples = examples
+            active_val_examples = train_examples
         else:
             active_val_examples = val_examples
         valset = [_to_case(case_type, example) for example in active_val_examples]
+        testset = [_to_case(case_type, example) for example in active_test_examples]
 
         active_evaluators = list(evaluators)
         if score is not None:
@@ -232,7 +249,7 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
             optimizer = PydanticGEPAOptimizer(
                 adapter=active_adapter,
                 initial_candidate=active_initial_candidate,
-                optimize_fn=optimize_fn,
+                optimize_fn=cast("OptimizeFn | None", optimize_fn),
             )
         else:
             active_adapter = PydanticOptimizeAnythingAdapter(adapter=adapter)
@@ -242,13 +259,23 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
                 optimization_objective=optimization_objective
                 or _default_optimization_objective(active_objective),
                 background=background,
-                optimize_fn=optimize_fn,
+                optimize_fn=cast(
+                    "OptimizeAnythingFn[EvalCaseView[InputsT, OutputT, MetadataT]] | None",
+                    optimize_fn,
+                ),
             )
         return cls(
-            adapter=active_adapter,
-            optimizer=optimizer,
+            adapter=cast(
+                "PydanticGEPAAdapter[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]] | PydanticOptimizeAnythingAdapter[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]]",
+                active_adapter,
+            ),
+            optimizer=cast(
+                "PydanticGEPAOptimizer[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]] | PydanticOptimizeAnythingOptimizer[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]]",
+                optimizer,
+            ),
             trainset=trainset,
             valset=valset,
+            testset=testset,
             initial_candidate=active_initial_candidate,
             backend=backend,
         )
@@ -257,7 +284,7 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
         self,
         *,
         initial_candidate: Candidate | None = None,
-        config: GEPAConfig | None = None,
+        config: GEPAConfig | OptimizeAnythingConfig | None = None,
         max_metric_calls: int | None = None,
         allow_same_train_val: bool | None = None,
         objective: str | None = None,
@@ -270,9 +297,14 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
                 raise ConfigurationError(
                     f"Unsupported Optimize Anything options: {names}. Use typed GEPAConfig fields."
                 )
-            return self.optimizer.optimize(
+            optimizer = cast(
+                "PydanticOptimizeAnythingOptimizer[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]]",
+                self.optimizer,
+            )
+            return optimizer.optimize(
                 trainset=self.trainset,
                 valset=self.valset,
+                testset=self.testset,
                 initial_candidate=initial_candidate,
                 config=config,
                 max_metric_calls=max_metric_calls,
@@ -284,7 +316,13 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
             raise ConfigurationError(
                 "objective and background overrides are only supported by the Optimize Anything backend."
             )
-        return self.optimizer.optimize(
+        if config is not None and not isinstance(config, GEPAConfig):
+            raise ConfigurationError("OptimizeAnythingConfig requires backend='optimize_anything'.")
+        optimizer = cast(
+            "PydanticGEPAOptimizer[EvalCaseView[InputsT, OutputT, MetadataT], OutputT, PydanticEvaluator[InputsT, OutputT, MetadataT]]",
+            self.optimizer,
+        )
+        return optimizer.optimize(
             trainset=self.trainset,
             valset=self.valset,
             initial_candidate=initial_candidate,
@@ -411,6 +449,10 @@ def _callable_score_evaluator(
 ) -> PydanticEvaluator[InputsT, OutputT, MetadataT]:
     class CallableScoreEvaluator(evaluator_type):
         evaluation_name = score_key
+
+        @classmethod
+        def get_serialization_name(cls) -> str:
+            return score_key
 
         def evaluate(
             self,

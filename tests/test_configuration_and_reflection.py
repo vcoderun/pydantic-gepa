@@ -36,7 +36,6 @@ from pydantic_gepa.errors import RunStoreError
 from pydantic_gepa.events import Event
 from pydantic_gepa.integrations.pydantic_ai import PydanticAIReflectionModel
 from pydantic_gepa.optimizer import OptimizeFn
-from pydantic_gepa.recorder import GEPAEventBridge
 from pydantic_gepa.reflection import (
     ReflectionPrompt,
     ReflectionResponse,
@@ -510,18 +509,14 @@ def test_optimizer_uses_owned_backend_checkpoint_and_resumes_before_model_calls(
     assert len(attempts) == 2
 
 
-def test_typed_config_wraps_observers_as_backend_callbacks() -> None:
+def test_typed_config_keeps_observers_out_of_backend_configuration() -> None:
     events: list[Event] = []
     config = GEPAConfig(
         run=RunConfig(id="events"),
         tracking=TrackingConfig(observers=(events.append,)),
     )
-    callbacks = config.to_backend_kwargs()["callbacks"]
-    assert isinstance(callbacks, tuple)
-    callback = callbacks[0]
-    assert isinstance(callback, GEPAEventBridge)
-    callback.on_optimization_start({"trainset_size": 1})
-    assert events[0].kind == "run.started"
+    assert config.to_backend_kwargs()["callbacks"] is None
+    assert events == []
 
 
 def test_optimizer_propagates_backend_failure_without_a_run_store() -> None:

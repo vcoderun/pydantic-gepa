@@ -12,6 +12,24 @@ from .adapter import PydanticGEPAAdapter
 from .candidates import Candidate
 from .configuration import BudgetConfig, ConfigurationError, EvaluationSetConfig, GEPAConfig
 from .errors import OptimizationDependencyError
+from .eventing import EvaluationEventSink, budget_snapshot, run_declaration
+from .events import (
+    BudgetUpdated,
+    CandidateAccepted,
+    CheckpointRejected,
+    CheckpointReset,
+    CheckpointResumed,
+    CheckpointWritten,
+    ComponentsRegistered,
+    RunCancelled,
+    RunCompleted,
+    RunFailed,
+    RunStarted,
+    _dispatcher,
+    _event_scope,
+    _EventDispatcher,
+)
+from .recorder import GEPAEventBridge
 from .results import (
     BudgetSummary,
     CandidateDelta,
@@ -264,82 +282,244 @@ class PydanticGEPAOptimizer(BaseModel, Generic[CaseT, RolloutOutputT, EvaluatorT
                 "valset is required unless allow_same_train_val=True."
             )
 
+        dispatcher = _dispatcher(
+            run_id=active_config.run.id,
+            backend="gepa",
+            local_observers=active_config.tracking.observers,
+            local_error_policy=active_config.tracking.observer_errors,
+        )
+        seed_candidate = initial_candidate or self.initial_candidate
+        stable_config = active_config.to_backend_kwargs()
+        stable_config["callbacks"] = None
+        declaration = run_declaration(
+            configuration_fingerprint=content_fingerprint(stable_config),
+            composition_fingerprint=None,
+            objective=self.adapter.objective,
+            trainset=trainset,
+            valset=active_valset,
+            evaluation_call_limit=active_config.budget.max_metric_calls,
+            optimizer_cost_limit=active_config.budget.max_reflection_cost,
+            checkpoint_path=(
+                None if active_config.run.directory is None else str(active_config.run.directory)
+            ),
+            engine_declaration={"kind": "gepa"},
+        )
+        dispatcher.emit(
+            RunStarted(
+                run_id=active_config.run.id,
+                seed=seed_candidate,
+                candidate_id=seed_candidate.id or seed_candidate.fingerprint(),
+                declaration=declaration,
+            )
+        )
+        try:
+            if self.adapter.components is not None:
+                dispatcher.emit(
+                    ComponentsRegistered(
+                        run_id=active_config.run.id,
+                        components=self.adapter.components.components,
+                    )
+                )
+            with _event_scope(dispatcher):
+                result, cached = self._execute(
+                    trainset=trainset,
+                    valset=active_valset,
+                    seed_candidate=seed_candidate,
+                    config=active_config,
+                    stable_config=stable_config,
+                    dispatcher=dispatcher,
+                )
+        except Exception as exc:
+            dispatcher.emit(
+                RunFailed(
+                    run_id=active_config.run.id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
+            raise
+        except BaseException as exc:
+            dispatcher.emit(
+                RunCancelled(
+                    run_id=active_config.run.id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
+            raise
+        if not cached:
+            dispatcher.emit(
+                CandidateAccepted(
+                    run_id=active_config.run.id,
+                    candidate_id=result.best_candidate.id or result.best_candidate.fingerprint(),
+                    parent_ids=(seed_candidate.id or seed_candidate.fingerprint(),),
+                    score=result.best_score,
+                )
+            )
+            dispatcher.emit(
+                BudgetUpdated(
+                    run_id=active_config.run.id,
+                    used=result.total_metric_calls or 0,
+                    remaining=(
+                        None
+                        if active_config.budget.max_metric_calls is None
+                        else max(
+                            0,
+                            active_config.budget.max_metric_calls
+                            - (result.total_metric_calls or 0),
+                        )
+                    ),
+                    optimizer_cost=result.budget.optimizer_cost,
+                    evaluation_cost=result.budget.evaluation_cost,
+                    total_cost=result.budget.total_cost,
+                )
+            )
+        dispatcher.emit(
+            RunCompleted(
+                run_id=active_config.run.id,
+                candidate_id=result.best_candidate.id or result.best_candidate.fingerprint(),
+                score=result.best_score,
+                total_metric_calls=result.total_metric_calls,
+                budget=budget_snapshot(result.budget),
+            )
+        )
+        return result
+
+    def _execute(
+        self,
+        *,
+        trainset: Sequence[CaseT],
+        valset: list[CaseT],
+        seed_candidate: Candidate,
+        config: GEPAConfig,
+        stable_config: dict[str, SerializableValue],
+        dispatcher: _EventDispatcher,
+    ) -> tuple[PydanticGEPAResult, bool]:
+        active_adapter = self.adapter.model_copy(
+            update={
+                "events": EvaluationEventSink(
+                    dispatcher,
+                    objective=self.adapter.objective,
+                    trainset=trainset,
+                    valset=valset,
+                )
+            }
+        )
         if (
             self.optimize_fn is None
-            and self.adapter.propose_new_texts is None
-            and active_config.reflection.proposer is None
-            and active_config.reflection.model is None
+            and active_adapter.propose_new_texts is None
+            and config.reflection.proposer is None
+            and config.reflection.model is None
         ):
             raise ConfigurationError(
                 "reflection.model is required when the adapter has no candidate proposer."
             )
-        if (
-            self.adapter.propose_new_texts is not None
-            and active_config.reflection.proposer is not None
-        ):
+        if active_adapter.propose_new_texts is not None and config.reflection.proposer is not None:
             raise ConfigurationError(
                 "Configure a candidate proposer on either the adapter or GEPAConfig, not both."
             )
 
-        seed_candidate = initial_candidate or self.initial_candidate
         store: FileRunStore | None = None
         run_state: RunState | None = None
-        if active_config.run.directory is not None:
-            store = FileRunStore(
-                active_config.run.directory,
-                run_id=active_config.run.id,
-                resume=active_config.run.resume,
-                fresh=active_config.run.fresh,
-            )
-            config_values = active_config.to_backend_kwargs()
-            config_values["run_dir"] = None
-            try:
-                backend_version = version("gepa")
-            except PackageNotFoundError:
-                backend_version = "not-installed"
-            fingerprint = CompatibilityFingerprint.from_dimensions(
-                {
-                    "pydantic-gepa": __version__,
-                    "gepa": backend_version,
-                    "candidate_schema": content_fingerprint(sorted(seed_candidate.values)),
-                    "config": content_fingerprint(config_values),
-                    "trainset": content_fingerprint(trainset),
-                    "valset": content_fingerprint(active_valset),
-                    "adapter": f"{type(self.adapter).__module__}.{type(self.adapter).__qualname__}",
-                    **active_config.run.compatibility,
-                }
-            )
-            run_state = store.prepare(
-                fingerprint=fingerprint,
-                initial_candidate=seed_candidate,
-            )
-            completed = store.load_result(PydanticGEPAResult)
-            if run_state.status == "completed" and completed is not None:
-                return completed
-            active_config = active_config.model_copy(
-                update={
-                    "run": active_config.run.model_copy(
-                        update={"directory": store.backend_directory}
-                    )
-                }
-            )
-
-        optimize_fn = self.optimize_fn or _load_gepa_optimize()
-        backend_kwargs = _backend_kwargs(optimize_fn, active_config)
         try:
+            if config.run.directory is not None:
+                store = FileRunStore(
+                    config.run.directory,
+                    run_id=config.run.id,
+                    resume=config.run.resume,
+                    fresh=config.run.fresh,
+                )
+                config_values = dict(stable_config)
+                config_values["run_dir"] = None
+                try:
+                    backend_version = version("gepa")
+                except PackageNotFoundError:
+                    backend_version = "not-installed"
+                fingerprint = CompatibilityFingerprint.from_dimensions(
+                    {
+                        "pydantic-gepa": __version__,
+                        "gepa": backend_version,
+                        "candidate_schema": content_fingerprint(sorted(seed_candidate.values)),
+                        "config": content_fingerprint(config_values),
+                        "trainset": content_fingerprint(trainset),
+                        "valset": content_fingerprint(valset),
+                        "adapter": (
+                            f"{type(active_adapter).__module__}.{type(active_adapter).__qualname__}"
+                        ),
+                        **config.run.compatibility,
+                    }
+                )
+                try:
+                    run_state = store.prepare(
+                        fingerprint=fingerprint,
+                        initial_candidate=seed_candidate,
+                    )
+                except Exception as exc:
+                    dispatcher.emit(
+                        CheckpointRejected(
+                            run_id=config.run.id,
+                            path=str(config.run.directory),
+                            reason=str(exc),
+                        )
+                    )
+                    raise
+                if run_state.reset:
+                    dispatcher.emit(
+                        CheckpointReset(run_id=config.run.id, path=str(config.run.directory))
+                    )
+                if run_state.resumed:
+                    dispatcher.emit(
+                        CheckpointResumed(run_id=config.run.id, path=str(config.run.directory))
+                    )
+                completed = store.load_result(PydanticGEPAResult)
+                if run_state.status == "completed" and completed is not None:
+                    return completed, True
+                config = config.model_copy(
+                    update={
+                        "run": config.run.model_copy(update={"directory": store.backend_directory})
+                    }
+                )
+
+            optimize_fn = self.optimize_fn or _load_gepa_optimize()
+            backend_kwargs = _backend_kwargs(optimize_fn, config)
+            if "callbacks" in backend_kwargs:
+                backend_kwargs["callbacks"] = (
+                    *config.tracking.backend_callbacks,
+                    GEPAEventBridge(
+                        run_id=config.run.id,
+                        on_event=dispatcher.emit,
+                        lifecycle="backend_only",
+                        engine_execution_id=dispatcher.execution_id,
+                    ),
+                )
             raw_result = optimize_fn(
                 seed_candidate=seed_candidate.to_gepa_dict(),
                 trainset=list(trainset),
-                valset=active_valset,
-                adapter=self.adapter,
+                valset=valset,
+                adapter=active_adapter,
                 **backend_kwargs,
             )
             result = result_from_gepa(
                 raw_result,
-                run_id=active_config.run.id,
-                budget_limit=active_config.budget.max_metric_calls,
-            ).normalize_candidates(self.adapter.normalize_candidate)
-        except Exception as exc:
+                run_id=config.run.id,
+                budget_limit=config.budget.max_metric_calls,
+            ).normalize_candidates(active_adapter.normalize_candidate)
+            if store is not None and run_state is not None:
+                store.write_candidate(result.best_candidate)
+                store.write_result(result)
+                store.checkpoint(
+                    run_state.model_copy(
+                        update={
+                            "status": "completed",
+                            "accepted_candidate": result.best_candidate,
+                            "metric_calls": result.total_metric_calls or 0,
+                            "backend_checkpoint": str(store.backend_directory),
+                        }
+                    )
+                )
+                dispatcher.emit(CheckpointWritten(run_id=config.run.id, path=str(store.directory)))
+            return result, False
+        except BaseException as exc:
             if store is not None and run_state is not None:
                 store.checkpoint(
                     run_state.model_copy(
@@ -350,21 +530,8 @@ class PydanticGEPAOptimizer(BaseModel, Generic[CaseT, RolloutOutputT, EvaluatorT
                         }
                     )
                 )
+                dispatcher.emit(CheckpointWritten(run_id=config.run.id, path=str(store.directory)))
             raise
-        if store is not None and run_state is not None:
-            store.write_candidate(result.best_candidate)
-            store.write_result(result)
-            store.checkpoint(
-                run_state.model_copy(
-                    update={
-                        "status": "completed",
-                        "accepted_candidate": result.best_candidate,
-                        "metric_calls": result.total_metric_calls or 0,
-                        "backend_checkpoint": str(store.backend_directory),
-                    }
-                )
-            )
-        return result
 
 
 def _optimization_config(

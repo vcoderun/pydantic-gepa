@@ -4,26 +4,35 @@ import json
 import sys
 import types
 from collections.abc import Mapping
+from contextvars import Context
 from dataclasses import dataclass
+from datetime import timedelta
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 from rich.console import Console
 
-from pydantic_gepa import Candidate, OptimizationDependencyError, RunConfig, RunStoreError
+from pydantic_gepa import Candidate, OptimizationDependencyError, Plan, RunConfig, RunStoreError
+from pydantic_gepa.eventing import budget_snapshot
 from pydantic_gepa.events import (
     BackendProgress,
+    BudgetSnapshot,
+    BudgetUpdated,
     CandidateNormalized,
+    EvaluationCompleted,
     Event,
+    IterationStarted,
     RunCompleted,
     RunStarted,
     StageCompleted,
     StageStarted,
+    _dispatcher,
     compose_observers,
     event_payload,
+    subscribe,
 )
 from pydantic_gepa.observers import (
     LogfireObserver,
@@ -33,8 +42,15 @@ from pydantic_gepa.observers import (
     logfire_observer,
     rich_progress,
 )
-from pydantic_gepa.orchestration.models import BudgetUsage, PlanResult, StageResult
+from pydantic_gepa.orchestration.models import (
+    BudgetUsage,
+    PlanResult,
+    Stage,
+    StageOutput,
+    StageResult,
+)
 from pydantic_gepa.recorder import GEPAEventBridge
+from pydantic_gepa.results import BudgetSummary
 from pydantic_gepa.state import (
     CompatibilityFingerprint,
     FileRunStore,
@@ -42,6 +58,13 @@ from pydantic_gepa.state import (
     content_fingerprint,
 )
 from pydantic_gepa.values import JsonValue
+
+if TYPE_CHECKING:
+    from gepa.core.callbacks import (
+        BudgetUpdatedEvent,
+        EvaluationEndEvent,
+        IterationStartEvent,
+    )
 
 
 class StoredResult(BaseModel):
@@ -94,23 +117,234 @@ def test_events_are_serializable_and_observers_have_explicit_failure_policies() 
     compose_observers(fail, on_error="ignore")(started)
 
 
+def test_budget_snapshots_preserve_normalized_cost_and_call_accounting() -> None:
+    snapshot = budget_snapshot(
+        BudgetSummary(
+            metric_calls=4,
+            metric_call_limit=8,
+            reflection_cost=0.25,
+            evaluation_cost=0.75,
+            total_cost=1.0,
+        )
+    )
+    completed = RunCompleted(run_id="budgeted", budget=snapshot)
+
+    assert snapshot == BudgetSnapshot(
+        evaluation_calls=4,
+        evaluation_call_limit=8,
+        optimizer_cost=0.25,
+        evaluation_cost=0.75,
+        total_cost=1.0,
+    )
+    assert event_payload(completed)["budget"] == {
+        "evaluation_calls": 4,
+        "evaluation_call_limit": 8,
+        "optimizer_cost": 0.25,
+        "optimizer_cost_limit": None,
+        "evaluation_cost": 0.75,
+        "total_cost": 1.0,
+    }
+
+    explicit = budget_snapshot(
+        BudgetSummary(
+            evaluation_calls=3,
+            evaluation_call_limit=6,
+            optimizer_cost=0.5,
+            optimizer_cost_limit=2.0,
+        )
+    )
+    assert explicit.evaluation_calls == 3
+    assert explicit.evaluation_call_limit == 6
+    assert explicit.optimizer_cost == 0.5
+    assert explicit.optimizer_cost_limit == 2.0
+
+
 def test_typed_gepa_bridge_supports_observers_and_rejects_an_empty_target() -> None:
     with pytest.raises(ValueError, match="requires on_event or recorder"):
         GEPAEventBridge()
 
     events: list[Event] = []
     bridge = GEPAEventBridge(run_id="typed", on_event=events.append)
-    bridge.on_iteration_start({"iteration": 1})
-    bridge.on_evaluation_end({"candidate_idx": 2, "scores": "invalid"})
-    bridge.on_budget_updated({"metric_calls_used": True, "metric_calls_remaining": "unknown"})
-
-    assert events[0] == BackendProgress(
-        run_id="typed",
-        name="iteration_start",
-        metadata={"iteration": 1},
+    bridge.on_iteration_start(
+        cast(
+            "IterationStartEvent",
+            {"iteration": 1, "state": None, "trainset_loader": None},
+        )
     )
-    assert events[1].kind == "candidate.evaluated"
-    assert events[2].kind == "budget.updated"
+    bridge.on_evaluation_end(
+        cast(
+            "EvaluationEndEvent",
+            {
+                "iteration": 1,
+                "candidate_idx": 2,
+                "scores": [0.25, 0.75],
+                "has_trajectories": False,
+                "parent_ids": [0],
+                "outputs": [],
+                "trajectories": None,
+                "objective_scores": None,
+                "is_seed_candidate": False,
+            },
+        )
+    )
+    bridge.on_budget_updated(
+        cast(
+            "BudgetUpdatedEvent",
+            {
+                "iteration": 1,
+                "metric_calls_used": 2,
+                "metric_calls_delta": 2,
+                "metric_calls_remaining": 3,
+            },
+        )
+    )
+
+    assert isinstance(events[0], IterationStarted)
+    assert events[0].iteration == 1
+    assert isinstance(events[1], EvaluationCompleted)
+    assert events[1].scores == (0.25, 0.75)
+    assert events[1].parent_ids == ("0",)
+    assert isinstance(events[2], BudgetUpdated)
+    assert events[2].used == 2
+    assert all(event.engine == "gepa" for event in events)
+
+
+def test_subscriptions_are_context_local_snapshotted_ordered_and_close_idempotently() -> None:
+    events: list[Event] = []
+    handle = subscribe(events.append)
+
+    def finish(candidate: Candidate, limit: int) -> StageOutput:
+        del limit
+        return StageOutput(candidate=candidate, score=1.0, metric_calls=1)
+
+    plan = Plan(
+        Stage("prompt", ("instructions",), finish),
+        initial_candidate=candidate(),
+    )
+    result = plan.run(run=RunConfig(id="subscribed"))
+    handle.close()
+    handle.close()
+
+    assert result.effective_score == 1.0
+    assert handle.closed is True
+    assert [event.sequence for event in events] == list(range(len(events)))
+    assert all(event.execution_id == events[0].execution_id for event in events)
+    assert all(event.backend == "plan" for event in events)
+    assert all(event.occurred_at.utcoffset() == timedelta(0) for event in events)
+    assert [event.monotonic_ns for event in events] == sorted(
+        event.monotonic_ns for event in events
+    )
+
+    observed_count = len(events)
+    plan.run(run=RunConfig(id="after-close"))
+    assert len(events) == observed_count
+
+    isolated_events: list[Event] = []
+    isolated_handle = subscribe(isolated_events.append)
+    Context().run(lambda: plan.run(run=RunConfig(id="isolated")))
+    isolated_handle.close()
+    assert isolated_events == []
+
+
+def test_subscription_and_local_observer_error_policies_are_independent() -> None:
+    local_events: list[Event] = []
+    integration_events: list[Event] = []
+
+    def fail(_event: Event) -> None:
+        raise RuntimeError("observer failed")
+
+    plan = Plan(
+        Stage(
+            "prompt",
+            ("instructions",),
+            lambda candidate, _limit: StageOutput(
+                candidate=candidate,
+                score=1.0,
+                metric_calls=1,
+            ),
+        ),
+        initial_candidate=candidate(),
+    )
+    with (
+        subscribe(integration_events.append),
+        pytest.raises(RuntimeError, match="observer failed"),
+    ):
+        plan.run(run=RunConfig(id="local-failure"), on_event=fail)
+    assert [event.kind for event in integration_events] == ["run.started"]
+
+    with subscribe(fail, on_error="ignore"):
+        plan.run(run=RunConfig(id="ignored-integration"), on_event=local_events.append)
+    assert local_events[0].kind == "run.started"
+    assert local_events[-1].kind == "run.completed"
+
+    warned = False
+
+    def fail_once(_event: Event) -> None:
+        nonlocal warned
+        if not warned:
+            warned = True
+            raise RuntimeError("warned observer")
+
+    with (
+        subscribe(fail_once, on_error="warn"),
+        pytest.warns(RuntimeWarning, match="warned observer"),
+    ):
+        plan.run(run=RunConfig(id="warned-integration"))
+
+    with (
+        subscribe(fail, on_error="raise"),
+        pytest.raises(RuntimeError, match="observer failed"),
+    ):
+        _dispatcher(run_id="subscriber-failure", backend="plan").emit(
+            RunStarted(
+                run_id="subscriber-failure",
+                execution_id="explicit-execution",
+                backend="plan",
+            )
+        )
+
+
+def test_nested_plans_inherit_parent_execution_and_stage_scope() -> None:
+    events: list[Event] = []
+    child = Plan(
+        Stage(
+            "child-stage",
+            ("instructions",),
+            lambda candidate, _limit: StageOutput(
+                candidate=candidate,
+                score=1.0,
+                metric_calls=1,
+            ),
+        ),
+        initial_candidate=candidate(),
+    )
+
+    def run_child(candidate_value: Candidate, limit: int) -> StageOutput:
+        del limit
+        result = child.run(run=RunConfig(id="child"))
+        assert result.effective_score is not None
+        return StageOutput(
+            candidate=result.final_candidate,
+            score=result.effective_score,
+            metric_calls=result.total_metric_calls,
+        )
+
+    parent = Plan(
+        Stage("parent-stage", ("instructions",), run_child),
+        initial_candidate=candidate(),
+    )
+    with subscribe(events.append):
+        parent.run(run=RunConfig(id="parent"))
+
+    parent_started = next(
+        event for event in events if event.kind == "run.started" and event.run_id == "parent"
+    )
+    child_events = [event for event in events if event.run_id == "child"]
+    assert child_events
+    assert child_events[0].sequence == 0
+    assert all(event.parent_execution_id == parent_started.execution_id for event in child_events)
+    assert child_events[0].stage_id == "parent-stage"
+    assert all(event.stage_id in {"parent-stage", "child-stage"} for event in child_events)
 
 
 def test_content_fingerprints_normalize_models_dataclasses_sets_and_opaque_values() -> None:
@@ -139,6 +373,7 @@ def test_file_run_store_writes_and_resumes_owned_state(tmp_path: Path) -> None:
     directory = tmp_path / "run"
     fingerprint = CompatibilityFingerprint.from_dimensions({"dataset": "v1"})
     store = FileRunStore(directory, run_id="demo")
+    assert store.load_state() is None
     state = store.prepare(fingerprint=fingerprint, initial_candidate=candidate())
 
     candidate_path = store.write_candidate(candidate("better"))
@@ -338,7 +573,8 @@ def test_logfire_autobench_and_callback_observers_receive_serialized_events() ->
     LogfireObserver(logfire=logger)(event)
     logfire_observer(logfire=logger)(event)
     recorder = Recorder()
-    autobench_observer(recorder)(event)
+    with pytest.warns(DeprecationWarning, match="native pydantic-gepa instrumentor"):
+        autobench_observer(recorder)(event)
     callback_events: list[Mapping[str, JsonValue]] = []
     callback_observer(callback_events.append)(event)
 

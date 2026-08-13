@@ -10,6 +10,8 @@ from .values import JsonValue, ReprSerializable
 
 CandidateStatus = Literal["proposed", "accepted", "rejected", "best", "unknown"]
 ResultBackend = Literal["gepa", "optimize_anything"]
+EngineRunStatus = Literal["completed", "failed", "cancelled"]
+BudgetSource = Literal["upstream", "pydantic_gepa", "mixed", "unknown"]
 
 
 class CandidateDelta(BaseModel):
@@ -26,6 +28,7 @@ class ScoreSummary(BaseModel):
     search: tuple[float, ...] = ()
     train: float | None = None
     validation: float | None = None
+    baseline_test: float | None = None
     test: float | None = None
     aggregate: float | None = None
 
@@ -36,6 +39,17 @@ class BudgetSummary(BaseModel):
     metric_calls: int | None = Field(default=None, ge=0)
     metric_call_limit: int | None = Field(default=None, ge=0)
     reflection_cost: float | None = Field(default=None, ge=0)
+    evaluation_calls: int | None = Field(default=None, ge=0)
+    evaluation_call_limit: int | None = Field(default=None, ge=0)
+    optimizer_cost: float | None = Field(default=None, ge=0)
+    optimizer_cost_limit: float | None = Field(default=None, ge=0)
+    evaluation_cost: float | None = Field(default=None, ge=0)
+    total_cost: float | None = Field(default=None, ge=0)
+    final_rescore_calls: int = Field(default=0, ge=0)
+    final_rescore_cost: float | None = Field(default=None, ge=0)
+    heldout_evaluation_calls: int = Field(default=0, ge=0)
+    heldout_evaluation_cost: float | None = Field(default=None, ge=0)
+    source: BudgetSource = "unknown"
 
 
 class ArtifactReference(BaseModel):
@@ -61,6 +75,81 @@ class CandidateSummary(BaseModel):
     deltas: tuple[CandidateDelta, ...] = ()
 
 
+class EngineRunSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    execution_id: str
+    parent_execution_id: str | None = None
+    pipeline_id: str | None = None
+    step_id: str | None = None
+    branch_id: str | None = None
+    engine: str
+    family: str
+    candidate_mode: Literal["components", "text"]
+    input_candidate: Candidate
+    output_candidate: Candidate
+    search_score: float
+    selection_score: float | None = None
+    status: EngineRunStatus = "completed"
+    stop_reason: str | None = None
+    budget: BudgetSummary = Field(default_factory=BudgetSummary)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    artifacts: tuple[ArtifactReference, ...] = ()
+    reported: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class SelectionSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    method: Literal["best_score", "vote", "adaptive", "pipeline"]
+    selected_execution_id: str
+    selected_candidate: Candidate
+    score: float
+    contender_execution_ids: tuple[str, ...]
+    contender_scores: tuple[float, ...]
+    evaluation_calls: int = Field(default=0, ge=0)
+    reason: str | None = None
+
+
+class AdaptiveSliceSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    engine_index: int = Field(ge=0)
+    engine: str
+    evaluation_start: int = Field(ge=0)
+    evaluation_end: int = Field(ge=0)
+    evaluation_calls: int = Field(ge=0)
+    score_before: float | None = None
+    score_after: float | None = None
+    improved: bool
+    optimizer_cost: float | None = Field(default=None, ge=0)
+
+
+class CompositionStepSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    step_id: str
+    kind: str
+    input_candidate: Candidate
+    output_candidate: Candidate | None = None
+    engine_execution_ids: tuple[str, ...]
+    selected_execution_id: str | None = None
+    budget: BudgetSummary = Field(default_factory=BudgetSummary)
+
+
+class CompositionSummary(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: str
+    pipeline_id: str
+    engine_runs: tuple[EngineRunSummary, ...]
+    selections: tuple[SelectionSummary, ...] = ()
+    steps: tuple[CompositionStepSummary, ...] = ()
+    adaptive_schedule: tuple[AdaptiveSliceSummary, ...] = ()
+    stop_reason: str | None = None
+    budget: BudgetSummary = Field(default_factory=BudgetSummary)
+
+
 class PydanticGEPAResult(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -69,8 +158,10 @@ class PydanticGEPAResult(BaseModel):
     backend: ResultBackend = "gepa"
     run_id: str | None = None
     plan_id: str | None = None
+    stage_id: str | None = None
     final_candidate: Candidate | None = None
     stages: tuple[dict[str, JsonValue], ...] = ()
+    composition: CompositionSummary | None = None
     scores: ScoreSummary = Field(default_factory=ScoreSummary)
     budget: BudgetSummary = Field(default_factory=BudgetSummary)
     stop_reason: str | None = None
@@ -155,13 +246,20 @@ OptimizationResult = PydanticGEPAResult
 
 
 __all__ = (
+    "AdaptiveSliceSummary",
     "ArtifactReference",
     "BudgetSummary",
+    "BudgetSource",
     "CandidateDelta",
     "CandidateStatus",
     "CandidateSummary",
+    "CompositionSummary",
+    "CompositionStepSummary",
+    "EngineRunStatus",
+    "EngineRunSummary",
     "OptimizationResult",
     "PydanticGEPAResult",
     "ResultBackend",
     "ScoreSummary",
+    "SelectionSummary",
 )

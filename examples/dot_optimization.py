@@ -9,7 +9,6 @@ from pathlib import Path
 
 import dotenv
 import logfire
-
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, ImageUrl
 
@@ -130,7 +129,7 @@ def configure_runtime(args: argparse.Namespace) -> None:
     env_path = args.env_file or args.project_root / ".env"
     if env_path.is_file():
         dotenv.load_dotenv(dotenv_path=env_path)
-    logfire.configure(send_to_logfire=True if args.logfire else False)
+    logfire.configure(send_to_logfire=args.logfire)
     if args.logfire:
         logfire.instrument_pydantic_ai()
         logfire.instrument_httpx(capture_all=True)

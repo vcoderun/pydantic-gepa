@@ -1,12 +1,11 @@
 from __future__ import annotations as _annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, is_dataclass
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
 
-from pydantic import BaseModel
-
+from .candidates import Candidate
 from .events import (
+    BackendError,
     BackendProgress,
     BudgetUpdated,
     CandidateAccepted,
@@ -14,18 +13,54 @@ from .events import (
     CandidateProposed,
     CandidateRejected,
     CheckpointWritten,
+    EvaluationCompleted,
+    EvaluationSkipped,
+    EvaluationStarted,
     Event,
+    IterationCompleted,
+    IterationStarted,
     Observer,
+    ParetoFrontUpdated,
+    ReflectionCompleted,
+    ReflectionStarted,
     RunCompleted,
     RunFailed,
     RunStarted,
     event_payload,
 )
+from .values import JsonValue
+
+if TYPE_CHECKING:
+    from gepa.core.callbacks import (
+        BudgetUpdatedEvent,
+        CandidateAcceptedEvent,
+        CandidateRejectedEvent,
+        CandidateSelectedEvent,
+        ErrorEvent,
+        EvaluationEndEvent,
+        EvaluationSkippedEvent,
+        EvaluationStartEvent,
+        IterationEndEvent,
+        IterationStartEvent,
+        MergeAcceptedEvent,
+        MergeAttemptedEvent,
+        MergeRejectedEvent,
+        MinibatchSampledEvent,
+        OptimizationEndEvent,
+        OptimizationStartEvent,
+        ParetoFrontUpdatedEvent,
+        ProposalEndEvent,
+        ProposalStartEvent,
+        ReflectiveDatasetBuiltEvent,
+        StateSavedEvent,
+        ValsetEvaluatedEvent,
+    )
 
 BatchItemT = TypeVar("BatchItemT", contravariant=True)
 ReportT = TypeVar("ReportT", contravariant=True)
 TrajectoryT = TypeVar("TrajectoryT", contravariant=True)
 EventValue = str | int | float | bool | None | list["EventValue"] | dict[str, "EventValue"]
+BridgeLifecycle = Literal["full", "backend_only"]
 
 
 @runtime_checkable
@@ -58,211 +93,354 @@ class GEPAEventBridge:
         run_id: str = "gepa",
         on_event: Observer | None = None,
         recorder: OptimizationEventRecorder | None = None,
+        lifecycle: BridgeLifecycle = "full",
+        engine: str = "gepa",
+        composition: str | None = None,
+        pipeline_id: str | None = None,
+        step_id: str | None = None,
+        branch_id: str | None = None,
+        engine_execution_id: str | None = None,
+        parent_execution_id: str | None = None,
     ) -> None:
         if on_event is None and recorder is None:
             raise ValueError("GEPAEventBridge requires on_event or recorder.")
         self.run_id = run_id
         self.on_event = on_event
         self.recorder = recorder
+        self.lifecycle = lifecycle
+        self.engine = engine
+        self.composition = composition
+        self.pipeline_id = pipeline_id
+        self.step_id = step_id
+        self.branch_id = branch_id
+        self.engine_execution_id = engine_execution_id
+        self.parent_execution_id = parent_execution_id
 
-    def on_optimization_start(self, event: Mapping[str, Any]) -> None:
-        self._emit(RunStarted(run_id=self.run_id, metadata=_normalize_mapping(event)))
+    def on_optimization_start(self, event: OptimizationStartEvent) -> None:
+        if self.lifecycle == "full":
+            self._emit(
+                RunStarted(
+                    run_id=self.run_id,
+                    seed=Candidate(values=dict(event["seed_candidate"])),
+                    metadata={
+                        "train_count": event["trainset_size"],
+                        "validation_count": event["valset_size"],
+                    },
+                )
+            )
 
-    def on_optimization_end(self, event: Mapping[str, Any]) -> None:
+    def on_optimization_end(self, event: OptimizationEndEvent) -> None:
+        if self.lifecycle == "full":
+            self._emit(
+                RunCompleted(
+                    run_id=self.run_id,
+                    candidate_id=str(event["best_candidate_idx"]),
+                    total_metric_calls=event["total_metric_calls"],
+                    metadata={"total_iterations": event["total_iterations"]},
+                )
+            )
+
+    def on_iteration_start(self, event: IterationStartEvent) -> None:
         self._emit(
-            RunCompleted(
+            IterationStarted(
                 run_id=self.run_id,
-                total_metric_calls=_optional_int(event.get("total_metric_calls")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
             )
         )
 
-    def on_iteration_start(self, event: Mapping[str, Any]) -> None:
-        self._progress("iteration_start", event)
+    def on_iteration_end(self, event: IterationEndEvent) -> None:
+        self._emit(
+            IterationCompleted(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                metadata={"proposal_accepted": event["proposal_accepted"]},
+            )
+        )
 
-    def on_iteration_end(self, event: Mapping[str, Any]) -> None:
-        self._progress("iteration_end", event)
-
-    def on_candidate_selected(self, event: Mapping[str, Any]) -> None:
+    def on_candidate_selected(self, event: CandidateSelectedEvent) -> None:
+        candidate_id = str(event["candidate_idx"])
         self._emit(
             CandidateProposed(
                 run_id=self.run_id,
-                candidate_id=_optional_text(event.get("candidate_idx")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                candidate_id=candidate_id,
+                candidate=Candidate(values=dict(event["candidate"]), id=candidate_id),
+                metadata={"selection_score": event["score"]},
             )
         )
 
-    def on_minibatch_sampled(self, event: Mapping[str, Any]) -> None:
-        self._progress("minibatch_sampled", event)
+    def on_minibatch_sampled(self, event: MinibatchSampledEvent) -> None:
+        self._emit(
+            BackendProgress(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                name="minibatch_sampled",
+                metadata={
+                    "batch_size": len(event["minibatch_ids"]),
+                    "train_count": event["trainset_size"],
+                },
+            )
+        )
 
-    def on_evaluation_start(self, event: Mapping[str, Any]) -> None:
-        self._progress("evaluation_start", event)
+    def on_evaluation_start(self, event: EvaluationStartEvent) -> None:
+        self._emit(
+            EvaluationStarted(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                candidate_id=_optional_text(event["candidate_idx"]),
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                evaluation_id=self._evaluation_id(
+                    event["iteration"],
+                    event["candidate_idx"],
+                ),
+                case_count=event["batch_size"],
+                metadata={
+                    "capture_traces": event["capture_traces"],
+                    "seed_candidate": event["is_seed_candidate"],
+                },
+            )
+        )
 
-    def on_evaluation_end(self, event: Mapping[str, Any]) -> None:
-        scores = event.get("scores")
+    def on_evaluation_end(self, event: EvaluationEndEvent) -> None:
+        scores = tuple(float(score) for score in event["scores"])
+        self._emit(
+            EvaluationCompleted(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                candidate_id=_optional_text(event["candidate_idx"]),
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                evaluation_id=self._evaluation_id(
+                    event["iteration"],
+                    event["candidate_idx"],
+                ),
+                case_count=max(1, len(scores)),
+                scores=scores,
+                metadata={
+                    "has_trajectories": event["has_trajectories"],
+                    "seed_candidate": event["is_seed_candidate"],
+                },
+            )
+        )
+
+    def on_evaluation_skipped(self, event: EvaluationSkippedEvent) -> None:
+        self._emit(
+            EvaluationSkipped(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                candidate_id=str(event["candidate_idx"]),
+                evaluation_id=self._evaluation_id(
+                    event["iteration"],
+                    event["candidate_idx"],
+                ),
+                reason=event["reason"],
+                metadata={"seed_candidate": event["is_seed_candidate"]},
+            )
+        )
+
+    def on_valset_evaluated(self, event: ValsetEvaluatedEvent) -> None:
         self._emit(
             CandidateEvaluated(
                 run_id=self.run_id,
-                candidate_id=_optional_text(event.get("candidate_idx")),
-                scores=_numeric_sequence(scores),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                candidate_id=str(event["candidate_idx"]),
+                score=float(event["average_score"]),
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                metadata={
+                    "examples_evaluated": event["num_examples_evaluated"],
+                    "validation_count": event["total_valset_size"],
+                    "best_program": event["is_best_program"],
+                },
             )
         )
 
-    def on_evaluation_skipped(self, event: Mapping[str, Any]) -> None:
-        self._progress("evaluation_skipped", event)
-
-    def on_valset_evaluated(self, event: Mapping[str, Any]) -> None:
+    def on_reflective_dataset_built(self, event: ReflectiveDatasetBuiltEvent) -> None:
+        components: list[JsonValue] = list(event["components"])
         self._emit(
-            CandidateEvaluated(
+            BackendProgress(
                 run_id=self.run_id,
-                candidate_id=_optional_text(event.get("candidate_idx")),
-                score=_optional_float(event.get("average_score")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                candidate_id=str(event["candidate_idx"]),
+                name="reflective_dataset_built",
+                metadata={
+                    "iteration_id": event["iteration_id"],
+                    "components": components,
+                    "record_count": sum(len(records) for records in event["dataset"].values()),
+                },
             )
         )
 
-    def on_reflective_dataset_built(self, event: Mapping[str, Any]) -> None:
-        self._progress("reflective_dataset_built", event)
+    def on_proposal_start(self, event: ProposalStartEvent) -> None:
+        components: list[JsonValue] = []
+        for component in event["components"]:
+            components.append(component)
+        self._emit(
+            ReflectionStarted(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                metadata={"components": components},
+            )
+        )
 
-    def on_proposal_start(self, event: Mapping[str, Any]) -> None:
-        self._progress("proposal_start", event)
+    def on_proposal_end(self, event: ProposalEndEvent) -> None:
+        components: list[JsonValue] = []
+        for component in sorted(event["new_instructions"]):
+            components.append(component)
+        self._emit(
+            ReflectionCompleted(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                metadata={"components": components},
+            )
+        )
+        self._emit(
+            CandidateProposed(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                candidate=Candidate(values=dict(event["new_instructions"])),
+            )
+        )
 
-    def on_proposal_end(self, event: Mapping[str, Any]) -> None:
-        self._emit(CandidateProposed(run_id=self.run_id, metadata=_normalize_mapping(event)))
-
-    def on_candidate_accepted(self, event: Mapping[str, Any]) -> None:
+    def on_candidate_accepted(self, event: CandidateAcceptedEvent) -> None:
         self._emit(
             CandidateAccepted(
                 run_id=self.run_id,
-                candidate_id=_optional_text(event.get("new_candidate_idx")),
-                score=_optional_float(event.get("new_score")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                candidate_id=str(event["new_candidate_idx"]),
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                score=float(event["new_score"]),
             )
         )
 
-    def on_candidate_rejected(self, event: Mapping[str, Any]) -> None:
+    def on_candidate_rejected(self, event: CandidateRejectedEvent) -> None:
         self._emit(
             CandidateRejected(
                 run_id=self.run_id,
-                reason=str(event.get("reason", "rejected")),
-                score=_optional_float(event.get("new_score")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                reason=event["reason"],
+                score=float(event["new_score"]),
+                metadata={"old_score": event["old_score"]},
             )
         )
 
-    def on_merge_attempted(self, event: Mapping[str, Any]) -> None:
-        self._progress("merge_attempted", event)
+    def on_merge_attempted(self, event: MergeAttemptedEvent) -> None:
+        components: list[JsonValue] = []
+        for component in sorted(event["merged_candidate"]):
+            components.append(component)
+        self._emit(
+            BackendProgress(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                name="merge_attempted",
+                metadata={"components": components},
+            )
+        )
 
-    def on_merge_accepted(self, event: Mapping[str, Any]) -> None:
+    def on_merge_accepted(self, event: MergeAcceptedEvent) -> None:
         self._emit(
             CandidateAccepted(
                 run_id=self.run_id,
-                candidate_id=_optional_text(event.get("new_candidate_idx")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                candidate_id=str(event["new_candidate_idx"]),
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
             )
         )
 
-    def on_merge_rejected(self, event: Mapping[str, Any]) -> None:
+    def on_merge_rejected(self, event: MergeRejectedEvent) -> None:
         self._emit(
             CandidateRejected(
                 run_id=self.run_id,
-                reason=str(event.get("reason", "merge rejected")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                parent_ids=tuple(str(parent) for parent in event["parent_ids"]),
+                reason=event["reason"],
             )
         )
 
-    def on_pareto_front_updated(self, event: Mapping[str, Any]) -> None:
-        self._progress("pareto_front_updated", event)
+    def on_pareto_front_updated(self, event: ParetoFrontUpdatedEvent) -> None:
+        displaced: list[JsonValue] = [str(candidate) for candidate in event["displaced_candidates"]]
+        self._emit(
+            ParetoFrontUpdated(
+                run_id=self.run_id,
+                iteration=event["iteration"],
+                candidate_ids=tuple(str(candidate) for candidate in event["new_front"]),
+                metadata={"displaced_candidate_ids": displaced},
+            )
+        )
 
-    def on_state_saved(self, event: Mapping[str, Any]) -> None:
+    def on_state_saved(self, event: StateSavedEvent) -> None:
         self._emit(
             CheckpointWritten(
                 run_id=self.run_id,
-                path=str(event.get("run_dir") or ""),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                path=event["run_dir"] or "",
             )
         )
 
-    def on_budget_updated(self, event: Mapping[str, Any]) -> None:
+    def on_budget_updated(self, event: BudgetUpdatedEvent) -> None:
         self._emit(
             BudgetUpdated(
                 run_id=self.run_id,
-                used=_optional_int(event.get("metric_calls_used")) or 0,
-                remaining=_optional_int(event.get("metric_calls_remaining")),
-                metadata=_normalize_mapping(event),
+                iteration=event["iteration"],
+                used=event["metric_calls_used"],
+                remaining=event["metric_calls_remaining"],
+                metadata={"evaluation_calls_delta": event["metric_calls_delta"]},
             )
         )
 
-    def on_error(self, event: Mapping[str, Any]) -> None:
-        exception = event.get("exception")
+    def on_error(self, event: ErrorEvent) -> None:
+        exception = event["exception"]
+        if self.lifecycle == "full" and not event["will_continue"]:
+            self._emit(
+                RunFailed(
+                    run_id=self.run_id,
+                    iteration=event["iteration"],
+                    error_type=type(exception).__name__,
+                    message=str(exception),
+                )
+            )
+            return
         self._emit(
-            RunFailed(
+            BackendError(
                 run_id=self.run_id,
+                iteration=event["iteration"],
                 error_type=type(exception).__name__,
                 message=str(exception),
-                metadata=_normalize_mapping(event),
+                will_continue=event["will_continue"],
             )
         )
 
-    def _progress(self, name: str, event: Mapping[str, Any]) -> None:
-        self._emit(
-            BackendProgress(run_id=self.run_id, name=name, metadata=_normalize_mapping(event))
-        )
+    def _evaluation_id(self, iteration: int, candidate_index: int | None) -> str:
+        candidate = "seed" if candidate_index is None else str(candidate_index)
+        execution = self.engine_execution_id or self.run_id
+        return f"{execution}:evaluation:{iteration}:{candidate}"
 
     def _emit(self, event: Event) -> None:
+        correlated = event.model_copy(
+            update={
+                "engine": self.engine,
+                "composition": self.composition,
+                "pipeline_id": self.pipeline_id,
+                "step_id": self.step_id,
+                "branch_id": self.branch_id,
+                "engine_execution_id": self.engine_execution_id,
+                "parent_execution_id": self.parent_execution_id,
+            }
+        )
         if self.on_event is not None:
-            self.on_event(event)
+            self.on_event(correlated)
         if self.recorder is not None:
             self.recorder.record_event(
-                event_name=event.kind,
-                payload=dict(event_payload(event)),
+                event_name=correlated.kind,
+                payload=dict(event_payload(correlated)),
             )
 
 
-def _normalize_event_value(value: Any) -> EventValue:
-    if value is None or isinstance(value, str | int | float | bool):
-        return value
-    if isinstance(value, BaseException):
-        return repr(value)
-    if isinstance(value, BaseModel):
-        return _normalize_event_value(value.model_dump(mode="json"))
-    if is_dataclass(value) and not isinstance(value, type):
-        return _normalize_event_value(asdict(value))
-    if isinstance(value, Mapping):
-        return {str(key): _normalize_event_value(item) for key, item in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
-        return [_normalize_event_value(item) for item in value]
-    return repr(value)
-
-
-def _normalize_mapping(values: Mapping[str, Any]) -> dict[str, EventValue]:
-    return {str(key): _normalize_event_value(value) for key, value in values.items()}
-
-
-def _optional_int(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _optional_float(value: Any) -> float | None:
-    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
-
-
-def _optional_text(value: Any) -> str | None:
+def _optional_text(value: int | None) -> str | None:
     return None if value is None else str(value)
 
 
-def _numeric_sequence(value: Any) -> tuple[float, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, str | bytes | bytearray):
-        return ()
-    return tuple(
-        float(item)
-        for item in value
-        if isinstance(item, int | float) and not isinstance(item, bool)
-    )
-
-
 __all__ = (
+    "BridgeLifecycle",
     "CandidateEvaluationRecorder",
     "EventValue",
     "GEPAEventBridge",

@@ -28,6 +28,7 @@ htmlcov/
 # Build outputs
 build/
 dist/
+outputs/
 site/
 docs/_markdown/
 

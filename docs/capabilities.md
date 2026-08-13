@@ -24,7 +24,9 @@
 | Rich progress | observer/config | custom observer | `events_progress.py` |
 | Logfire | optional observer | reflection records | `logfire_observer.py` |
 | CLI | Python target | custom Click integration | command-line docs |
-| Optimize Anything | backend selector | experimental adapter | `experimental_optimize_anything.py` |
+| Optimize Anything engines | `Engine.gepa/autoresearch/meta_harness/best_of_n/custom` | exact custom engine contract | `experimental_optimize_anything.py` |
+| Engine composition | `Sequential`, `Parallel`, `BestOf`, `Vote`, `AdaptiveSequential` | normalized selection and budget evidence | `experimental_optimize_anything.py` |
+| Omni pipeline | `Pipeline` | step checkpoint and continuation lineage | `experimental_optimize_anything.py` |
 | External evidence recording | recorder hook | adapter report envelopes | `recorder_hook.py` |
 
 ## Deliberate non-features

@@ -8,7 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .compat import EvaluationBatch
 from .evaluation.evidence import Encoder
-from .evaluation.traces import ComponentTrace
+from .evaluation.models import CaseResult
+from .evaluation.traces import ComponentTrace, ErrorInfo
 from .objectives import MetricResult, ScoreInput, ScoreValueCarrier
 from .values import JsonValue, SerializableValue
 
@@ -98,6 +99,18 @@ class ReportCaseException(Protocol):
     def exception(self) -> str | BaseException | None: ...
 
 
+@runtime_checkable
+class ReportCaseDuration(Protocol):
+    @property
+    def duration(self) -> float: ...
+
+
+@runtime_checkable
+class ScoreReason(Protocol):
+    @property
+    def reason(self) -> str | None: ...
+
+
 ReportCaseRecord: TypeAlias = (
     ReportCaseName
     | ReportCaseInputs
@@ -109,6 +122,7 @@ ReportCaseRecord: TypeAlias = (
     | ReportCaseErrorStacktrace
     | ReportCaseError
     | ReportCaseException
+    | ReportCaseDuration
 )
 SampleSelection = Literal["input_order", "lowest_score", "failure_first"]
 UnroutableEvidence = Literal["shared", "skip"]
@@ -329,6 +343,66 @@ def report_case_record(
     return record
 
 
+def report_case_result(
+    report_case: ReportCaseRecord,
+    *,
+    transformed_score: float,
+    objective_key: str,
+    objective_scores: Mapping[str, float] | None = None,
+    traces: Sequence[ComponentTrace] = (),
+    encoder: Encoder | None = None,
+) -> CaseResult[JsonValue]:
+    active_encoder = encoder or Encoder()
+    metrics: dict[str, MetricResult] = {}
+    raw_scores = report_case.scores if isinstance(report_case, ReportCaseScores) else None
+    for name, score in (raw_scores or {}).items():
+        key = str(name)
+        value = score.value if isinstance(score, ScoreValueCarrier) else score
+        if isinstance(value, MetricResult):
+            metrics[key] = value
+        elif isinstance(value, bool | int | float):
+            metrics[key] = MetricResult(
+                score=float(value),
+                role="objective" if key == objective_key else "diagnostic",
+                feedback=score.reason if isinstance(score, ScoreReason) else None,
+            )
+
+    objectives = {name: float(value) for name, value in (objective_scores or {}).items()}
+    if objective_key not in objectives and objective_key in metrics:
+        objectives[objective_key] = metrics[objective_key].score
+    if objective_key not in metrics:
+        metrics[objective_key] = MetricResult(
+            score=objectives.get(objective_key, transformed_score),
+            role="objective",
+        )
+    elif metrics[objective_key].role != "objective":
+        metrics[objective_key] = metrics[objective_key].model_copy(update={"role": "objective"})
+
+    error = _error_payload(report_case)
+    duration = report_case.duration if isinstance(report_case, ReportCaseDuration) else 0.0
+    return CaseResult[JsonValue](
+        output=(
+            active_encoder.encode(report_case.output)
+            if isinstance(report_case, ReportCaseOutput)
+            else None
+        ),
+        metrics=metrics,
+        objectives=objectives,
+        feedback={
+            name: metric.feedback for name, metric in metrics.items() if metric.feedback is not None
+        },
+        side_info={
+            name: active_encoder.mapping(metric.side_info)
+            for name, metric in metrics.items()
+            if metric.side_info
+        },
+        traces=tuple(traces),
+        task_error=None if error is None else ErrorInfo(kind="EvaluationError", message=error),
+        duration_seconds=max(0.0, duration),
+        invocation_count=1,
+    )
+
+
 def _select_records(
     records: list[dict[str, SerializableValue]],
     *,
@@ -526,4 +600,5 @@ __all__ = (
     "SampleSelection",
     "UnroutableEvidence",
     "report_case_record",
+    "report_case_result",
 )

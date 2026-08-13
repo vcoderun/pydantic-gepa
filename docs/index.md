@@ -53,7 +53,7 @@ required for a standalone optimization.
 - several coupled components in one candidate
 - arbitrary values derived from candidate text through a typed context
 - staged component groups with shared budgets and checkpoints
-- experimental Optimize Anything objectives
+- experimental Optimize Anything Omni engines and compositions
 
 ## Start here
 

@@ -1,5 +1,6 @@
 from __future__ import annotations as _annotations
 
+import warnings
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -104,6 +105,13 @@ def logfire_observer(*, logfire: Any | None = None) -> Observer:
 
 
 def autobench_observer(recorder: AutobenchRecorder) -> Observer:
+    warnings.warn(
+        "autobench_observer() is deprecated; install Autobench's native pydantic-gepa "
+        "instrumentor, or use callback_observer() for a generic serialized event callback.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
     def record(event: Event) -> None:
         recorder.record_optimization_event(event_payload(event))
 

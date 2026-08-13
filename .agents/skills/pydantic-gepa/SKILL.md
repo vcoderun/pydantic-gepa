@@ -33,7 +33,8 @@ repository example required by the task.
 - `PydanticGEPAResult` and `stable_dump()` are the package boundary; do not persist raw GEPA
   objects.
 - `Plan` is for real stage ownership, budget, or validation boundaries, not cosmetic layering.
-- Standard and experimental Optimize Anything backends share candidates, evaluation, and results.
+- Standard GEPA and experimental Optimize Anything Omni share candidates, evaluation, and
+  normalized results; select Omni engines and compositions through typed experimental models.
 - pydantic-gepa does not deploy prompts, overwrite source files, or own promotion policy.
 
 ## Reference Router
@@ -63,7 +64,8 @@ repository example required by the task.
 - `examples/checkpoint_resume.py`: compatible durable resume.
 - `examples/events_progress.py` and `examples/logfire_observer.py`: observers and progress.
 - `examples/low_level_adapter.py`: direct adapter and reflective evidence for integration authors.
-- `examples/experimental_optimize_anything.py`: isolated experimental backend.
+- `examples/experimental_optimize_anything.py`: real single GEPA and deterministic custom-engine
+  Omni pipeline with held-out scoring and lineage.
 
 ## Implementation Workflow
 

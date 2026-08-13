@@ -551,8 +551,8 @@ async def test_plan_resumes_between_stages_and_returns_completed_result_without_
     assert calls == ["prompt", "interrupted", "tool"]
     assert result.final_candidate.values == {"prompt": "p1", "tool": "t1"}
     assert [event.kind for event in resumed_events] == [
-        "checkpoint.resumed",
         "run.started",
+        "checkpoint.resumed",
         "stage.started",
         "candidate.normalized",
         "candidate.evaluated",
@@ -570,6 +570,7 @@ async def test_plan_resumes_between_stages_and_returns_completed_result_without_
     assert restored == result
     assert calls == []
     assert [event.kind for event in completed_events] == [
+        "run.started",
         "checkpoint.resumed",
         "run.completed",
     ]
@@ -592,7 +593,10 @@ def test_plan_emits_fresh_reset_and_checkpoint_rejection_events(tmp_path: Path) 
         run=RunConfig(id="events", directory=directory, fresh=True),
         on_event=fresh_events.append,
     )
-    assert fresh_events[0].kind == "checkpoint.reset"
+    assert [event.kind for event in fresh_events[:2]] == [
+        "run.started",
+        "checkpoint.reset",
+    ]
 
     rejected_events: list[Event] = []
     with pytest.raises(RunStoreError, match="incompatible"):
@@ -605,7 +609,11 @@ def test_plan_emits_fresh_reset_and_checkpoint_rejection_events(tmp_path: Path) 
             ),
             on_event=rejected_events.append,
         )
-    assert [event.kind for event in rejected_events] == ["checkpoint.rejected"]
+    assert [event.kind for event in rejected_events] == [
+        "run.started",
+        "checkpoint.rejected",
+        "run.failed",
+    ]
 
 
 class _Report:

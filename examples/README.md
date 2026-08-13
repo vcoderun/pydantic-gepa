@@ -24,8 +24,9 @@ dependencies from the `examples` extra. Deterministic examples do not require AP
 - `checkpoint_resume.py`: durable run state and a completed-run resume without repeated work.
 - `events_progress.py`: typed lifecycle events and Rich progress from the same plan.
 - `logfire_observer.py`: optional structured Logfire delivery through typed events.
-- `experimental_optimize_anything.py`: live experimental Optimize Anything backend usage
-  under its explicit namespace.
+- `experimental_optimize_anything.py`: a real GEPA engine plus deterministic custom-engine
+  BestOf/continuation Omni pipeline, held-out evaluation, lineage, and typed AutoResearch
+  declaration under the explicit experimental namespace.
 
 Run one example with:
 

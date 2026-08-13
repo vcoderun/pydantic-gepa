@@ -13,6 +13,7 @@ from pydantic_gepa import (
     PydanticEvalTrajectory,
     ScoreObjective,
 )
+from pydantic_gepa.asi import report_case_result
 from pydantic_gepa.evaluation import ComponentTrace, Encoder
 from pydantic_gepa.values import SerializableValue
 
@@ -398,6 +399,37 @@ def test_pydantic_evals_asi_builder_includes_metric_feedback_side_info_and_knobs
         "success": False,
         "failure_category": "assertion_failure",
     }
+
+
+def test_report_case_result_normalizes_objective_metric_roles_and_fallbacks() -> None:
+    direct = report_case_result(
+        _ReportCase(
+            scores={
+                "judge": MetricResult(score=0.6, role="diagnostic"),
+                "raw": _Score(0.2),
+                "ignored": _Score("text"),
+            }
+        ),
+        transformed_score=0.6,
+        objective_key="judge",
+    )
+    inferred = report_case_result(
+        _ReportCase(scores={"quality": _Score(0.7)}),
+        transformed_score=0.7,
+        objective_key="quality",
+    )
+    supplied = report_case_result(
+        _ReportCase(scores={"diagnostic": _Score(0.1)}),
+        transformed_score=0.8,
+        objective_key="quality",
+        objective_scores={"quality": 0.8},
+    )
+
+    assert direct.metrics["judge"].role == "objective"
+    assert "ignored" not in direct.metrics
+    assert inferred.objectives == {"quality": 0.7}
+    assert supplied.metrics["quality"].score == 0.8
+    assert supplied.metrics["quality"].role == "objective"
 
 
 def test_pydantic_evals_asi_builder_routes_records_by_metadata_hint() -> None:

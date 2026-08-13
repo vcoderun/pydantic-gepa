@@ -12,6 +12,7 @@ from ..configuration import RunConfig
 from ..errors import PlanError
 from ..events import (
     BudgetExhausted,
+    BudgetSnapshot,
     BudgetUpdated,
     CandidateAccepted,
     CandidateEvaluated,
@@ -21,17 +22,19 @@ from ..events import (
     CheckpointReset,
     CheckpointResumed,
     CheckpointWritten,
-    Event,
     FinalRescoreCompleted,
     FinalRescoreStarted,
     Observer,
+    RunCancelled,
     RunCompleted,
     RunFailed,
     RunStarted,
     StageCompleted,
     StageFailed,
     StageStarted,
-    compose_observers,
+    _dispatcher,
+    _event_scope,
+    _EventDispatcher,
 )
 from ..results import PydanticGEPAResult
 from ..state import (
@@ -133,12 +136,68 @@ class Plan:
         store: RunStore | None = None,
         on_event: Observer | Sequence[Observer] | None = None,
     ) -> PlanResult:
+        active_run = run or RunConfig()
+        observers: tuple[Observer, ...]
+        if on_event is None:
+            observers = ()
+        elif callable(on_event):
+            observers = (cast("Observer", on_event),)
+        else:
+            observers = tuple(on_event)
+        dispatcher = _dispatcher(
+            run_id=active_run.id,
+            backend="plan",
+            local_observers=observers,
+        )
         initial = seed or self.initial_candidate
+        dispatcher.emit(
+            RunStarted(
+                run_id=active_run.id,
+                seed=initial,
+                candidate_id=initial.id or initial.fingerprint(),
+            )
+        )
+        try:
+            with _event_scope(dispatcher):
+                return await self._execute(
+                    seed=initial,
+                    run=active_run,
+                    store=store,
+                    dispatcher=dispatcher,
+                )
+        except Exception as exc:
+            dispatcher.emit(
+                RunFailed(
+                    run_id=active_run.id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
+            raise
+        except BaseException as exc:
+            dispatcher.emit(
+                RunCancelled(
+                    run_id=active_run.id,
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                )
+            )
+            raise
+
+    async def _execute(
+        self,
+        *,
+        seed: Candidate,
+        run: RunConfig,
+        store: RunStore | None,
+        dispatcher: _EventDispatcher,
+    ) -> PlanResult:
+        initial = seed
         current = initial
         stage_results: list[StageResult] = []
         total_calls = 0
         stop_reason: str | None = None
-        active_run = run or RunConfig()
+        active_run = run
         active_store = store
         if active_store is None and active_run.directory is not None:
             active_store = FileRunStore(
@@ -147,20 +206,7 @@ class Plan:
                 resume=active_run.resume,
                 fresh=active_run.fresh,
             )
-        observers: tuple[Observer, ...]
-        if on_event is None:
-            observers = ()
-        elif callable(on_event):
-            observers = (cast("Observer", on_event),)
-        else:
-            observers = tuple(on_event)
-        notify = compose_observers(*observers)
-        sequence = 0
-
-        def emit(event: Event) -> None:
-            nonlocal sequence
-            notify(event.model_copy(update={"sequence": sequence}))
-            sequence += 1
+        emit = dispatcher.emit
 
         start_stage = 0
         fingerprint: CompatibilityFingerprint | None = None
@@ -196,11 +242,17 @@ class Plan:
                         run_id=active_run.id,
                         score=completed.effective_score,
                         total_metric_calls=completed.total_metric_calls,
+                        budget=(
+                            None
+                            if completed.budget is None
+                            else BudgetSnapshot(
+                                evaluation_calls=completed.budget.used,
+                                evaluation_call_limit=completed.budget.limit,
+                            )
+                        ),
                     )
                 )
                 return completed
-
-        emit(RunStarted(run_id=active_run.id, seed=current))
 
         for stage_index, stage in enumerate(self.stages[start_stage:], start=start_stage):
             remaining = (
@@ -230,9 +282,10 @@ class Plan:
                 )
             )
             try:
-                execution = stage.run(stage_input, stage_limit)
-                if inspect.isawaitable(execution):
-                    execution = cast("StageExecution", await execution)
+                with _event_scope(dispatcher, stage_id=stage.id):
+                    execution = stage.run(stage_input, stage_limit)
+                    if inspect.isawaitable(execution):
+                        execution = cast("StageExecution", await execution)
                 output = _stage_output(execution)
                 _validate_stage_output(stage, stage_input, output.candidate)
                 emit(
@@ -315,6 +368,10 @@ class Plan:
                         stage_id=stage.id,
                         candidate_id=merged.id,
                         score=stage_result.effective_score,
+                        budget=BudgetSnapshot(
+                            evaluation_calls=stage_result.budget.used,
+                            evaluation_call_limit=stage_result.budget.limit,
+                        ),
                     )
                 )
             except Exception as exc:
@@ -345,16 +402,6 @@ class Plan:
                         message=str(exc),
                     )
                 )
-            except BaseException as exc:
-                emit(
-                    RunFailed(
-                        run_id=active_run.id,
-                        stage_id=stage.id,
-                        error_type=type(exc).__name__,
-                        message=str(exc),
-                    )
-                )
-                raise
             stage_results.append(stage_result)
             if active_store is not None and fingerprint is not None:
                 active_store.write_candidate(stage_result.output_candidate)
@@ -439,6 +486,14 @@ class Plan:
                 run_id=active_run.id,
                 score=result.effective_score,
                 total_metric_calls=total_calls,
+                budget=(
+                    None
+                    if result.budget is None
+                    else BudgetSnapshot(
+                        evaluation_calls=result.budget.used,
+                        evaluation_call_limit=result.budget.limit,
+                    )
+                ),
             )
         )
         return result

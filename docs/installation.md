@@ -24,8 +24,14 @@ and Pydantic Evals for actual optimization runs.
 ```bash
 uv add "pydantic-gepa[logfire]"       # Logfire observer integration
 uv add "pydantic-gepa[progress]"      # Rich progress rendering
+uv add "pydantic-gepa[optimize-anything]"  # GEPA Omni and built-in agent engines
 uv add "pydantic-gepa[examples]"      # All example dependencies
 ```
+
+`integrations` installs base GEPA, Pydantic AI, and Pydantic Evals. The
+`optimize-anything` extra additionally installs `gepa[full]`. AutoResearch and
+other external agent engines may still require their own CLI, credentials, and
+operating-system sandbox support.
 
 ## Python support
 

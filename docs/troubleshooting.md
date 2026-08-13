@@ -10,6 +10,12 @@ uv add "pydantic-gepa[integrations]"
 
 The base package intentionally does not require every integration dependency.
 
+For AutoResearch, Meta-Harness, Best-of-N, or Omni compositions, install:
+
+```bash
+uv add "pydantic-gepa[optimize-anything]"
+```
+
 ## Candidate is missing a component
 
 Ensure the component exists in both the initial candidate and component catalog.
@@ -48,6 +54,25 @@ honestly. Do not disable checks to reuse stale state.
 Enable `ProgressConfig(display_bar=True)` and a Rich or Logfire observer. Check
 provider timeouts, concurrency, retry behavior, and reflection model logs.
 Evaluation and reflection are separate model-call sources.
+
+## Optimize Anything custom engine cannot evaluate a split
+
+Use `split="train"`, `split="val"`, or `split="all"`. The upstream canonical
+name is `"val"`, not `"validation"`. Held-out test examples are deliberately
+absent from the engine-facing evaluation server.
+
+## Optimize Anything composition rejects candidate modes
+
+All engines in one composition must use one candidate mode. Configure GEPA
+with `candidate_mode="text"` when composing it with AutoResearch,
+Meta-Harness, Best-of-N, or another text engine. Select one component through
+`OptimizeAnythingConfig(component=...)` when the parent candidate has siblings
+that must stay frozen.
+
+## Pipeline rejects Parallel
+
+`Parallel` returns sibling branches without selecting one. Use `BestOf` or
+`Vote` when a later pipeline step needs one candidate to continue from.
 
 ## Event logs appear but GEPA progress does not
 

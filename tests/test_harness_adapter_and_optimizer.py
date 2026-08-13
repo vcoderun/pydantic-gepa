@@ -8,12 +8,12 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from pydantic import BaseModel
 
-import pydantic_gepa.experimental.optimize_anything as optimize_anything_module
+import pydantic_gepa.experimental.optimize_anything.adapter as optimize_anything_adapter_module
 from pydantic_gepa import (
     AgentInstructionsInjection,
     Candidate,
@@ -27,7 +27,6 @@ from pydantic_gepa import (
     OptimizationDependencyError,
     PydanticEvalsASIBuilder,
     PydanticEvalsHarness,
-    PydanticEvalTrajectory,
     PydanticGEPAAdapter,
     PydanticGEPAOptimizer,
     ScoreObjective,
@@ -44,11 +43,48 @@ from pydantic_gepa.configuration import (
     SelectionConfig,
     TrackingConfig,
 )
+from pydantic_gepa.eventing import EvaluationEventSink
+from pydantic_gepa.events import (
+    CaseEvaluated,
+    EvaluationCompleted,
+    EvaluationStarted,
+    Event,
+    _dispatcher,
+)
 from pydantic_gepa.experimental.optimize_anything import (
+    Engine,
+    OptimizeAnythingConfig,
+    OptimizeAnythingFn,
     PydanticOptimizeAnythingAdapter,
     PydanticOptimizeAnythingOptimizer,
 )
 from pydantic_gepa.recorder import EventValue
+
+if TYPE_CHECKING:
+    from gepa.core.callbacks import (
+        BudgetUpdatedEvent,
+        CandidateAcceptedEvent,
+        CandidateRejectedEvent,
+        CandidateSelectedEvent,
+        ErrorEvent,
+        EvaluationEndEvent,
+        EvaluationSkippedEvent,
+        EvaluationStartEvent,
+        IterationEndEvent,
+        IterationStartEvent,
+        MergeAcceptedEvent,
+        MergeAttemptedEvent,
+        MergeRejectedEvent,
+        MinibatchSampledEvent,
+        OptimizationEndEvent,
+        OptimizationStartEvent,
+        ParetoFrontUpdatedEvent,
+        ProposalEndEvent,
+        ProposalStartEvent,
+        ReflectiveDatasetBuiltEvent,
+        StateSavedEvent,
+        ValsetEvaluatedEvent,
+    )
 
 
 def test_harness_builds_batch_dataset_and_runs_sync_reports() -> None:
@@ -166,6 +202,75 @@ def test_adapter_evaluates_candidate_with_injection_scores_failures_and_recorder
     assert agent.seen_instructions == ["Use the case name."]
     assert recorder.records[0]["scores"] == [1.0, 1.0, 0.0]
     assert reflective["instructions"][0]["case_name"] == "case_1"
+
+
+def test_adapter_emits_correlated_events_for_reports_and_failures() -> None:
+    events: list[Event] = []
+    case = _Case("case_1")
+    dispatcher = _dispatcher(
+        run_id="evaluation-events",
+        backend="gepa",
+        local_observers=(events.append,),
+    )
+    adapter: PydanticGEPAAdapter[_Case, dict[str, str], str] = PydanticGEPAAdapter.from_dataset(
+        dataset=_Dataset(cases=[], evaluators=[]),
+        task=lambda value: {"answer": value.name},
+        injections=[],
+        objective=ScoreObjective(score_key="accuracy"),
+    )
+    adapter.events = EvaluationEventSink(
+        dispatcher,
+        objective=adapter.objective,
+        trainset=(case,),
+        valset=(),
+    )
+
+    result = adapter.evaluate([case], {}, capture_traces=True)
+    assert result.scores == [1.0, 0.0]
+    assert [event.kind for event in events].count("case.evaluated") == 2
+    assert all(
+        event.split == "train"
+        for event in events
+        if isinstance(event, EvaluationStarted | EvaluationCompleted | CaseEvaluated)
+    )
+
+    def fail_subject(_value: _Case) -> dict[str, str]:
+        raise RuntimeError("subject failed")
+
+    failing: PydanticGEPAAdapter[_Case, dict[str, str], str] = PydanticGEPAAdapter.from_dataset(
+        dataset=_Dataset(cases=[], evaluators=[]),
+        task=fail_subject,
+        injections=[],
+        objective=ScoreObjective(score_key="accuracy"),
+    )
+    failing.events = EvaluationEventSink(
+        dispatcher,
+        objective=failing.objective,
+        trainset=(case,),
+        valset=(),
+    )
+    with pytest.raises(RuntimeError, match="subject failed"):
+        failing.evaluate([case], {})
+    assert events[-2].kind == "evaluation.skipped"
+    assert events[-1].kind == "backend.error"
+
+    unobserved = failing.model_copy(update={"events": None})
+    with pytest.raises(RuntimeError, match="subject failed"):
+        unobserved.evaluate([case], {})
+
+    case_only: PydanticGEPAAdapter[_Case, dict[str, str], str] = PydanticGEPAAdapter.from_dataset(
+        dataset=_NoScoreDataset(cases=[], evaluators=[]),
+        task=lambda value: {"answer": value.name},
+        injections=[],
+        objective=ScoreObjective(score_key="accuracy"),
+    )
+    case_only.events = EvaluationEventSink(
+        dispatcher,
+        objective=case_only.objective,
+        trainset=(case,),
+        valset=(),
+    )
+    assert case_only.evaluate([case], {}).scores == [0.0]
 
 
 def test_adapter_can_store_custom_proposer() -> None:
@@ -299,6 +404,65 @@ def test_optimizer_requires_validation_set_unless_explicitly_allowed() -> None:
     assert result.candidate_history[0].candidate_id == "candidate_0"
     assert result.best_candidate_index is None
     assert result.raw_gepa_result is not None
+
+
+def test_standard_optimizer_reports_cancellation_and_fresh_checkpoint_reset(
+    tmp_path: Path,
+) -> None:
+    adapter = PydanticGEPAAdapter.from_dataset(
+        dataset=_Dataset(cases=[], evaluators=[]),
+        task=lambda case: {"answer": case.name},
+        injections=[],
+        objective=ScoreObjective(score_key="accuracy"),
+    )
+    cancelled_events: list[Event] = []
+
+    def cancel(**kwargs: Any) -> _RawResult:
+        del kwargs
+        raise KeyboardInterrupt("cancelled")
+
+    cancelled = PydanticGEPAOptimizer(
+        adapter=adapter,
+        initial_candidate=Candidate(values={"instructions": "seed"}),
+        optimize_fn=cancel,
+    )
+    with pytest.raises(KeyboardInterrupt, match="cancelled"):
+        cancelled.optimize(
+            trainset=[_Case("case")],
+            config=GEPAConfig(
+                evaluation_sets=EvaluationSetConfig(allow_same_train_validation=True),
+                tracking=TrackingConfig(observers=(cancelled_events.append,)),
+            ),
+        )
+    assert cancelled_events[-1].kind == "run.cancelled"
+
+    def complete(**kwargs: Any) -> _RawResult:
+        del kwargs
+        return _RawResult()
+
+    optimizer = cancelled.model_copy(update={"optimize_fn": complete})
+    directory = tmp_path / "fresh-standard"
+    initial = GEPAConfig(
+        budget=BudgetConfig(max_metric_calls=3),
+        reflection=ReflectionConfig(
+            model="test:reflection",
+            model_kwargs={"temperature": 0.1},
+        ),
+        run=RunConfig(id="fresh-standard", directory=directory),
+        evaluation_sets=EvaluationSetConfig(allow_same_train_validation=True),
+    )
+    optimizer.optimize(trainset=[_Case("case")], config=initial)
+    fresh_events: list[Event] = []
+    optimizer.optimize(
+        trainset=[_Case("case")],
+        config=initial.model_copy(
+            update={
+                "run": initial.run.model_copy(update={"fresh": True}),
+                "tracking": TrackingConfig(observers=(fresh_events.append,)),
+            }
+        ),
+    )
+    assert "checkpoint.reset" in [event.kind for event in fresh_events]
 
 
 def test_optimizer_reports_missing_gepa_dependency(
@@ -524,74 +688,278 @@ def test_result_from_gepa_handles_empty_objectives_and_tree_accessors() -> None:
 def test_gepa_event_bridge_normalizes_external_callback_payloads() -> None:
     recorder = _EventRecorder()
     bridge = GEPAEventBridge(recorder=recorder)
-    event = {
-        "iteration": 2,
-        "scores": [0.1, 0.9],
-        "exception": ValueError("boom"),
-        "payload": _EventPayload(value="ok"),
-        "model": _ModelEventPayload(value="model"),
-        "opaque": _OpaqueValue(),
-    }
-
-    bridge.on_optimization_start(event)
-    bridge.on_optimization_end(event)
-    bridge.on_iteration_start(event)
-    bridge.on_iteration_end(event)
-    bridge.on_candidate_selected(event)
-    bridge.on_minibatch_sampled(event)
-    bridge.on_evaluation_start(event)
-    bridge.on_evaluation_end(event)
-    bridge.on_evaluation_skipped(event)
-    bridge.on_valset_evaluated(event)
-    bridge.on_reflective_dataset_built(event)
-    bridge.on_proposal_start(event)
-    bridge.on_proposal_end(event)
-    bridge.on_candidate_accepted(event)
-    bridge.on_candidate_rejected(event)
-    bridge.on_merge_attempted(event)
-    bridge.on_merge_accepted(event)
-    bridge.on_merge_rejected(event)
-    bridge.on_pareto_front_updated(event)
-    bridge.on_state_saved(event)
-    bridge.on_budget_updated(event)
-    bridge.on_error(event)
+    bridge.on_optimization_start(
+        cast(
+            "OptimizationStartEvent",
+            {
+                "seed_candidate": {"prompt": "seed"},
+                "trainset_size": 2,
+                "valset_size": 1,
+                "config": {"max_metric_calls": 5},
+            },
+        )
+    )
+    bridge.on_optimization_end(
+        cast(
+            "OptimizationEndEvent",
+            {
+                "best_candidate_idx": 1,
+                "total_iterations": 2,
+                "total_metric_calls": 4,
+                "final_state": None,
+            },
+        )
+    )
+    bridge.on_iteration_start(
+        cast(
+            "IterationStartEvent",
+            {"iteration": 2, "state": None, "trainset_loader": None},
+        )
+    )
+    bridge.on_iteration_end(
+        cast(
+            "IterationEndEvent",
+            {"iteration": 2, "state": None, "proposal_accepted": True},
+        )
+    )
+    bridge.on_candidate_selected(
+        cast(
+            "CandidateSelectedEvent",
+            {
+                "iteration": 2,
+                "candidate_idx": 1,
+                "candidate": {"prompt": "selected"},
+                "score": 0.7,
+            },
+        )
+    )
+    bridge.on_minibatch_sampled(
+        cast(
+            "MinibatchSampledEvent",
+            {"iteration": 2, "minibatch_ids": ["a", "b"], "trainset_size": 4},
+        )
+    )
+    bridge.on_evaluation_start(
+        cast(
+            "EvaluationStartEvent",
+            {
+                "iteration": 2,
+                "candidate_idx": 1,
+                "batch_size": 2,
+                "capture_traces": True,
+                "parent_ids": [0],
+                "inputs": ["a", "b"],
+                "is_seed_candidate": False,
+            },
+        )
+    )
+    bridge.on_evaluation_end(
+        cast(
+            "EvaluationEndEvent",
+            {
+                "iteration": 2,
+                "candidate_idx": 1,
+                "scores": [0.1, 0.9],
+                "has_trajectories": True,
+                "parent_ids": [0],
+                "outputs": ["left", "right"],
+                "trajectories": ["trace-left", "trace-right"],
+                "objective_scores": [{"accuracy": 0.1}, {"accuracy": 0.9}],
+                "is_seed_candidate": False,
+            },
+        )
+    )
+    bridge.on_evaluation_skipped(
+        cast(
+            "EvaluationSkippedEvent",
+            {
+                "iteration": 2,
+                "candidate_idx": 1,
+                "reason": "already evaluated",
+                "scores": [0.1, 0.9],
+                "is_seed_candidate": False,
+            },
+        )
+    )
+    bridge.on_valset_evaluated(
+        cast(
+            "ValsetEvaluatedEvent",
+            {
+                "iteration": 2,
+                "candidate_idx": 1,
+                "candidate": {"prompt": "selected"},
+                "scores_by_val_id": {"validation": 0.9},
+                "average_score": 0.9,
+                "num_examples_evaluated": 1,
+                "total_valset_size": 1,
+                "parent_ids": [0],
+                "is_best_program": True,
+                "outputs_by_val_id": {"validation": "output"},
+            },
+        )
+    )
+    bridge.on_reflective_dataset_built(
+        cast(
+            "ReflectiveDatasetBuiltEvent",
+            {
+                "iteration": 2,
+                "iteration_id": "iteration-2",
+                "candidate_idx": 1,
+                "components": ["prompt"],
+                "dataset": {"prompt": [{"feedback": "improve"}]},
+            },
+        )
+    )
+    bridge.on_proposal_start(
+        cast(
+            "ProposalStartEvent",
+            {
+                "iteration": 2,
+                "parent_candidate": {"prompt": "selected"},
+                "components": ["prompt"],
+                "reflective_dataset": {"prompt": [{"feedback": "improve"}]},
+            },
+        )
+    )
+    bridge.on_proposal_end(
+        cast(
+            "ProposalEndEvent",
+            {
+                "iteration": 2,
+                "new_instructions": {"prompt": "proposed"},
+                "prompts": {"prompt": "reflection prompt"},
+                "raw_lm_outputs": {"prompt": "proposed"},
+            },
+        )
+    )
+    bridge.on_candidate_accepted(
+        cast(
+            "CandidateAcceptedEvent",
+            {
+                "iteration": 2,
+                "new_candidate_idx": 2,
+                "new_score": 0.9,
+                "parent_ids": [1],
+            },
+        )
+    )
+    bridge.on_candidate_rejected(
+        cast(
+            "CandidateRejectedEvent",
+            {"iteration": 2, "old_score": 0.9, "new_score": 0.8, "reason": "regressed"},
+        )
+    )
+    bridge.on_merge_attempted(
+        cast(
+            "MergeAttemptedEvent",
+            {
+                "iteration": 2,
+                "parent_ids": [1, 2],
+                "merged_candidate": {"prompt": "merged"},
+            },
+        )
+    )
+    bridge.on_merge_accepted(
+        cast(
+            "MergeAcceptedEvent",
+            {"iteration": 2, "new_candidate_idx": 3, "parent_ids": [1, 2]},
+        )
+    )
+    bridge.on_merge_rejected(
+        cast(
+            "MergeRejectedEvent",
+            {"iteration": 2, "parent_ids": [1, 2], "reason": "no improvement"},
+        )
+    )
+    bridge.on_pareto_front_updated(
+        cast(
+            "ParetoFrontUpdatedEvent",
+            {"iteration": 2, "new_front": [2, 3], "displaced_candidates": [1]},
+        )
+    )
+    bridge.on_state_saved(cast("StateSavedEvent", {"iteration": 2, "run_dir": "runs/demo"}))
+    bridge.on_budget_updated(
+        cast(
+            "BudgetUpdatedEvent",
+            {
+                "iteration": 2,
+                "metric_calls_used": 4,
+                "metric_calls_delta": 2,
+                "metric_calls_remaining": 1,
+            },
+        )
+    )
+    bridge.on_error(
+        cast(
+            "ErrorEvent",
+            {"iteration": 2, "exception": ValueError("boom"), "will_continue": False},
+        )
+    )
 
     assert [record["event_name"] for record in recorder.events] == [
         "run.started",
         "run.completed",
-        "backend.progress",
-        "backend.progress",
+        "iteration.started",
+        "iteration.completed",
         "candidate.proposed",
         "backend.progress",
-        "backend.progress",
+        "evaluation.started",
+        "evaluation.completed",
+        "evaluation.skipped",
         "candidate.evaluated",
         "backend.progress",
-        "candidate.evaluated",
-        "backend.progress",
-        "backend.progress",
+        "reflection.started",
+        "reflection.completed",
         "candidate.proposed",
         "candidate.accepted",
         "candidate.rejected",
         "backend.progress",
         "candidate.accepted",
         "candidate.rejected",
-        "backend.progress",
+        "pareto_front.updated",
         "checkpoint.written",
         "budget.updated",
         "run.failed",
     ]
     payload = cast("Mapping[str, Any]", recorder.events[0]["payload"])
     assert isinstance(payload, Mapping)
-    metadata = payload["metadata"]
-    assert isinstance(metadata, Mapping)
-    assert metadata == {
-        "iteration": 2,
-        "scores": [0.1, 0.9],
-        "exception": "ValueError('boom')",
-        "payload": {"value": "ok"},
-        "model": {"value": "model"},
-        "opaque": "<opaque-value>",
+    assert payload["metadata"] == {"train_count": 2, "validation_count": 1}
+    assert payload["seed"] == {
+        "values": {"prompt": "seed"},
+        "id": None,
+        "parent_id": None,
+        "generation": None,
+        "metadata": {},
     }
+
+
+def test_backend_only_bridge_suppresses_root_lifecycle_and_reports_terminal_errors() -> None:
+    recorder = _EventRecorder()
+    bridge = GEPAEventBridge(
+        run_id="backend-only",
+        recorder=recorder,
+        lifecycle="backend_only",
+    )
+    bridge.on_optimization_start(
+        cast(
+            "OptimizationStartEvent",
+            {"seed_candidate": {"prompt": "seed"}, "trainset_size": 1, "valset_size": 1},
+        )
+    )
+    bridge.on_optimization_end(
+        cast(
+            "OptimizationEndEvent",
+            {"best_candidate_idx": 0, "total_metric_calls": 1, "total_iterations": 1},
+        )
+    )
+    bridge.on_error(
+        cast(
+            "ErrorEvent",
+            {"iteration": 3, "exception": ValueError("terminal"), "will_continue": False},
+        )
+    )
+
+    assert [record["event_name"] for record in recorder.events] == ["backend.error"]
 
 
 def test_result_from_gepa_handles_none_objective_frontier_fields() -> None:
@@ -780,7 +1148,7 @@ def test_optimize_anything_optimizer_uses_local_config_and_runtime_overrides() -
         initial_candidate=Candidate(values={"instructions": "seed"}),
         optimization_objective="base objective",
         background="base background",
-        optimize_fn=_fake_optimize_anything,
+        optimize_fn=cast("OptimizeAnythingFn[_Case]", _fake_optimize_anything),
     )
 
     with pytest.raises(OptimizationDependencyError, match="valset is required"):
@@ -823,47 +1191,18 @@ def test_optimize_anything_optimizer_uses_local_config_and_runtime_overrides() -
 
     assert result.best_candidate.values == {"instructions": "opt-anything"}
     assert result.final_candidate == result.best_candidate
-    assert result.candidate_history[0].values == {"instructions": "history"}
-    assert result.candidate_history[0].deltas[0].after == "history"
+    assert result.candidate_history[0].values == {"instructions": "opt-anything"}
+    assert result.candidate_history[0].metadata == {"engine": "gepa", "branch": "branch-0"}
     assert result.best_score == 0.95
     assert result.backend == "optimize_anything"
 
-    backend_values: list[dict[str, Any]] = []
-
-    def config_factory(**values: Any) -> optimize_anything_module.LocalGEPAConfig:
-        backend_values.append(values)
-        engine = optimize_anything_module.LocalEngineConfig(
-            max_metric_calls=values["engine"]["max_metric_calls"],
-            run_dir=values["engine"]["run_dir"],
-        )
-        reflection = optimize_anything_module.LocalReflectionConfig(
-            reflection_lm=values["reflection"]["reflection_lm"]
-        )
-        return optimize_anything_module.LocalGEPAConfig(
-            engine=engine,
-            reflection=reflection,
-        )
-
-    custom_config = optimize_anything_module._build_optimize_anything_config(
-        config=GEPAConfig(budget=BudgetConfig(max_metric_calls=3)),
-        run_dir=None,
-        gepa_config_factory=config_factory,
-    )
-    assert custom_config.engine.max_metric_calls == 3
-    assert backend_values[0]["engine"]["candidate_selection_strategy"] == "pareto"
-    assert backend_values[0]["reflection"]["reflection_lm"] is None
-
-    cost_only = optimize_anything_module._build_optimize_anything_config(
-        config=GEPAConfig(budget=BudgetConfig(max_metric_calls=None, max_reflection_cost=1.5)),
-        run_dir=None,
-        gepa_config_factory=None,
-    )
-    assert isinstance(cost_only.engine, optimize_anything_module.LocalEngineConfig)
-    assert cost_only.engine.max_metric_calls is None
-    assert cost_only.engine.max_reflection_cost == 1.5
+    assert result.budget.metric_calls == 9
+    assert result.budget.metric_call_limit == 9
+    assert result.composition is not None
+    assert result.composition.kind == "single"
 
 
-def test_optimize_anything_rejects_settings_missing_from_the_backend_contract() -> None:
+def test_optimize_anything_preserves_typed_gepa_settings() -> None:
     configured = GEPAConfig(
         budget=BudgetConfig(max_metric_calls=3, max_reflection_cost=1.5),
         reflection=ReflectionConfig(model="test:model", model_kwargs={"temperature": 0.1}),
@@ -878,24 +1217,13 @@ def test_optimize_anything_rejects_settings_missing_from_the_backend_contract() 
         ),
     )
 
-    with pytest.raises(ConfigurationError, match="does not support configured options") as exc_info:
-        optimize_anything_module._build_optimize_anything_config(
-            config=configured,
-            run_dir=None,
-            gepa_config_factory=lambda **_values: optimize_anything_module.LocalGEPAConfig(
-                engine=optimize_anything_module.LocalEngineConfig(),
-                reflection=optimize_anything_module.LocalReflectionConfig(),
-            ),
-        )
+    engine = Engine.gepa(configured)
+    declaration = OptimizeAnythingConfig(engine=engine).declaration()
 
-    message = str(exc_info.value)
-    assert "budget.max_reflection_cost" in message
-    assert "reflection.model_kwargs" in message
-    assert "selection.acceptance" in message
-    assert "tracking callbacks" in message
-    assert "tracking.wandb_attach_existing" in message
-    assert "tracking.mlflow_attach_existing" in message
-    assert "tracking.key_prefix" in message
+    assert engine.max_evals == 3
+    assert engine.max_token_cost == 1.5
+    assert engine.gepa_config is configured
+    assert declaration["engine"] is not None
 
 
 def test_optimize_anything_optimizer_can_load_optional_dependency(
@@ -907,30 +1235,31 @@ def test_optimize_anything_optimizer_can_load_optional_dependency(
     optimize_anything_module_fake = types.ModuleType("gepa.optimize_anything")
 
     @dataclass(frozen=True)
-    class _EngineConfig:
-        max_metric_calls: int | None = None
-        run_dir: str | None = None
-
-    class _GEPAConfig:
-        def __init__(self, *, engine: dict[str, Any], **values: Any) -> None:
-            self.engine = _EngineConfig(
-                max_metric_calls=engine["max_metric_calls"],
-                run_dir=engine["run_dir"],
-            )
-            self.values = values
+    class _OptimizeAnythingConfig:
+        engine: Any
+        name: str
+        max_evals: int | None
+        max_token_cost: float | None
+        max_concurrency: int
+        output_dir: str | None
+        run_dir: str | None
+        stop_at_score: float | None
+        sandbox: bool
+        engine_config: dict[str, Any]
 
     def optimize_anything(**kwargs: Any) -> _RawResult:
         config = kwargs["config"]
-        assert isinstance(config, _GEPAConfig)
-        assert config.engine.max_metric_calls == 11
-        assert config.engine.run_dir == str(tmp_path / "optional" / "backend")
+        assert isinstance(config, _OptimizeAnythingConfig)
+        assert config.engine == "gepa"
+        assert config.max_evals == 11
+        assert config.run_dir == str(tmp_path / "optional" / "backend" / "step-0" / "branch-0")
         assert kwargs["objective"] == "custom objective"
         result = _RawResult()
         result.best_candidate = {"instructions": "optional"}
         result.best_score = 0.8
         return result
 
-    optimize_anything_module_fake.__dict__["GEPAConfig"] = _GEPAConfig
+    optimize_anything_module_fake.__dict__["OptimizeAnythingConfig"] = _OptimizeAnythingConfig
     optimize_anything_module_fake.__dict__["optimize_anything"] = optimize_anything
     monkeypatch.setitem(sys.modules, "gepa", package)
     monkeypatch.setitem(sys.modules, "gepa.optimize_anything", optimize_anything_module_fake)
@@ -947,14 +1276,15 @@ def test_optimize_anything_optimizer_can_load_optional_dependency(
         initial_candidate=Candidate(values={"instructions": "seed"}),
         optimization_objective="custom objective",
     )
-    result = optimizer.optimize(
-        trainset=[_Case("case_1")],
-        config=GEPAConfig(
-            budget=BudgetConfig(max_metric_calls=11),
-            run=RunConfig(id="optional", directory=tmp_path / "optional"),
-            evaluation_sets=EvaluationSetConfig(allow_same_train_validation=True),
-        ),
-    )
+    with pytest.warns(DeprecationWarning, match="OptimizeAnythingConfig"):
+        result = optimizer.optimize(
+            trainset=[_Case("case_1")],
+            config=GEPAConfig(
+                budget=BudgetConfig(max_metric_calls=11),
+                run=RunConfig(id="optional", directory=tmp_path / "optional"),
+                evaluation_sets=EvaluationSetConfig(allow_same_train_validation=True),
+            ),
+        )
 
     assert result.best_candidate.values == {"instructions": "optional"}
     assert result.best_score == 0.8
@@ -982,22 +1312,27 @@ def test_optimize_anything_uses_shared_run_state_for_failure_resume_and_cache(
     optimizer = PydanticOptimizeAnythingOptimizer(
         adapter=adapter,
         initial_candidate=Candidate(values={"instructions": "seed"}),
-        optimize_fn=optimize,
+        optimize_fn=cast("OptimizeAnythingFn[_Case]", optimize),
     )
     first = GEPAConfig(
         run=RunConfig(id="oa", directory=tmp_path / "oa"),
         evaluation_sets=EvaluationSetConfig(allow_same_train_validation=True),
     )
-    with pytest.raises(RuntimeError, match="interrupted"):
+    with (
+        pytest.warns(DeprecationWarning, match="OptimizeAnythingConfig"),
+        pytest.raises(RuntimeError, match="interrupted"),
+    ):
         optimizer.optimize(trainset=[_Case("case")], config=first)
 
     resumed = first.model_copy(update={"run": first.run.model_copy(update={"resume": "if_exists"})})
-    result = optimizer.optimize(trainset=[_Case("case")], config=resumed)
-    cached = optimizer.optimize(trainset=[_Case("case")], config=resumed)
+    with pytest.warns(DeprecationWarning, match="OptimizeAnythingConfig"):
+        result = optimizer.optimize(trainset=[_Case("case")], config=resumed)
+    with pytest.warns(DeprecationWarning, match="OptimizeAnythingConfig"):
+        cached = optimizer.optimize(trainset=[_Case("case")], config=resumed)
     assert result.backend == "optimize_anything"
     assert cached.model_dump() == result.model_dump()
     assert len(attempts) == 2
-    assert attempts[1].engine.run_dir == str(tmp_path / "oa" / "backend")
+    assert attempts[1].run_dir == str(tmp_path / "oa" / "backend" / "step-0" / "branch-0")
 
     def fail(**kwargs: Any) -> _RawResult:
         del kwargs
@@ -1021,10 +1356,11 @@ def test_optimize_anything_side_info_helper_handles_missing_trajectories() -> No
         objective=ScoreObjective(score_key="accuracy"),
     )
     eval_batch = adapter.evaluate([_Case("case_1")], {}, capture_traces=False)
-    side_info = optimize_anything_module._build_side_info(
+    side_info = optimize_anything_adapter_module._side_info(
         adapter=adapter,
         candidate={},
-        eval_batch=eval_batch,
+        evaluation=eval_batch,
+        index=0,
         score=1.0,
         objective_scores=None,
     )
@@ -1039,29 +1375,18 @@ def test_optimize_anything_side_info_helper_handles_missing_trajectories() -> No
         asi_builder=PydanticEvalsASIBuilder(component_selector=lambda **_: []),
     )
     filtered_batch = filtered_adapter.evaluate([_Case("case_1")], {}, capture_traces=True)
-    filtered_side_info = optimize_anything_module._build_side_info(
+    filtered_side_info = optimize_anything_adapter_module._side_info(
         adapter=filtered_adapter,
         candidate={},
-        eval_batch=filtered_batch,
+        evaluation=filtered_batch,
+        index=0,
         score=0.0,
         objective_scores=None,
-    )
-    empty_objective_scores = optimize_anything_module.EvaluationBatch[
-        PydanticEvalTrajectory,
-        dict[str, str] | None,
-    ](
-        outputs=[None],
-        scores=[0.0],
-        trajectories=None,
-        objective_scores=[],
-        num_metric_calls=0,
     )
 
     assert side_info == {"scores": {"accuracy": 1.0}}
     assert filtered_side_info["scores"] == {"accuracy": 0.0}
     assert "instructions_specific_info" not in filtered_side_info
-    assert optimize_anything_module._first_objective_scores(eval_batch) == {}
-    assert optimize_anything_module._first_objective_scores(empty_objective_scores) is None
 
 
 async def _async_value(value: str) -> str:
@@ -1084,8 +1409,8 @@ def _fake_optimize(**kwargs: Any) -> Any:
 
 def _fake_optimize_anything(**kwargs: Any) -> Any:
     config = kwargs["config"]
-    assert isinstance(config, optimize_anything_module.LocalGEPAConfig)
-    assert config.engine.max_metric_calls == 9
+    assert config.engine == "gepa"
+    assert config.max_evals == 9
     assert kwargs["objective"] == "runtime objective"
     assert kwargs["background"] == "runtime background"
     result = _RawResult()
@@ -1352,6 +1677,9 @@ class _HistoryItem:
 class _RawResult:
     best_candidate = {"instructions": "optimized"}
     best_score = 0.9
+    total_evals = 9
+    eval_log: list[dict[str, Any]] = []
+    metadata: dict[str, Any] = {}
     validation_scores = [0.8, 1.0]
     candidate_history = [_HistoryItem()]
     objective_scores = [{"accuracy": 0.9}]
@@ -1464,8 +1792,3 @@ class _EventPayload:
 
 class _ModelEventPayload(BaseModel):
     value: str
-
-
-class _OpaqueValue:
-    def __repr__(self) -> str:
-        return "<opaque-value>"

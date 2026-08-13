@@ -20,6 +20,9 @@ class MetricResult(BaseModel):
     role: MetricRole = "diagnostic"
     feedback: str | None = None
     side_info: dict[str, MetricSideInfoValue] = Field(default_factory=dict)
+    semantic_type: str | None = None
+    unit: str | None = None
+    direction: ObjectiveDirection | None = None
 
 
 ScoreInput = ScorePrimitive | str | MetricResult | None

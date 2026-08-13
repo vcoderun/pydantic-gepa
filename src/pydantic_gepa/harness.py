@@ -3,6 +3,7 @@ from __future__ import annotations as _annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import copy_context
 from threading import Thread
 from typing import Generic, Protocol, TypeVar, cast, runtime_checkable
 
@@ -130,6 +131,7 @@ async def _await_result(awaitable: Awaitable[OutputT]) -> OutputT:
 def _run_awaitable_in_thread(awaitable: Awaitable[OutputT]) -> OutputT:
     result: list[OutputT] = []
     errors: list[BaseException] = []
+    context = copy_context()
 
     def runner() -> None:
         try:
@@ -137,7 +139,7 @@ def _run_awaitable_in_thread(awaitable: Awaitable[OutputT]) -> OutputT:
         except BaseException as exc:  # pragma: no cover - thread boundary
             errors.append(exc)
 
-    thread = Thread(target=runner)
+    thread = Thread(target=context.run, args=(runner,))
     thread.start()
     thread.join()
 

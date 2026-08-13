@@ -13,22 +13,43 @@ the optimizer's common API.
 | GEPA reflection and selection | replay, compare, export, and policies |
 | normalized optimization result | durable evidence and run lineage |
 
-## Recorder hook
+## Native instrumentation
+
+Autobench owns the concrete integration. Install its optional extra and enable
+the native instrumentor in an Autobench benchmark:
+
+```bash
+uv add 'autobench[pydantic-gepa]'
+```
+
+```python
+benchmark = Benchmark("optimize-routing").instrument_all()
+```
+
+The instrumentor subscribes to pydantic-gepa's typed event stream. It records
+optimizer and engine spans, evaluation evidence, resource budgets, candidate
+lineage, and component asset versions without an Autobench import in this
+package or handwritten observer wiring.
+
+## Generic recorder hooks
 
 The low-level adapter accepts a `CandidateEvaluationRecorder`. The recorder is
 called with the candidate, evaluated batch, normalized report, scores, and
-optional trajectories. An Autobench adapter can convert these into observations
-and artifacts.
+optional trajectories. This remains useful for application-owned sinks that
+need evaluation-level callbacks.
 
 ```python
 adapter = PydanticGEPAAdapter.from_dataset(
     ...,
-    recorder=autobench_recorder,
+    recorder=application_recorder,
 )
 ```
 
-Keep the bridge in an integration layer. pydantic-gepa should not import
-Autobench merely to run an optimization.
+For serialized lifecycle events independent of a particular product, use
+`callback_observer(callback)`. The legacy `autobench_observer()` helper remains
+for one compatibility cycle and emits `DeprecationWarning`; new integrations
+should not use it. pydantic-gepa never imports Autobench merely to run an
+optimization.
 
 ## Semantic mapping
 
