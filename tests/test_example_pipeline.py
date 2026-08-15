@@ -1,6 +1,8 @@
 from __future__ import annotations as _annotations
 
+import asyncio
 import builtins
+import inspect
 import sys
 import types
 from collections.abc import Mapping, Sequence
@@ -39,6 +41,7 @@ from pydantic_gepa.experimental.optimize_anything import (
     PydanticOptimizeAnythingAdapter,
     PydanticOptimizeAnythingOptimizer,
 )
+from pydantic_gepa.harness import run_awaitable_sync
 
 
 def test_model_field_accuracy_scores_pydantic_model_fields() -> None:
@@ -132,6 +135,49 @@ def test_example_pipeline_builds_internal_evals_dataset_and_optimizes(
     assert pipeline.initial_candidate.values == {"instructions": component.initial_value}
     assert [case.name for case in pipeline.trainset] == ["match", "missing"]
     assert [case.name for case in pipeline.valset] == ["match"]
+
+
+@pytest.mark.asyncio
+async def test_example_pipeline_awaits_async_task_and_score(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_pydantic_evals(monkeypatch)
+    example = Example(
+        name="match",
+        inputs=_Input(text="Ada:1"),
+        expected_output=_Output(name="Ada", identifier="1"),
+    )
+    calls: list[str] = []
+
+    async def task(inputs: _Input) -> _Output:
+        await asyncio.sleep(0)
+        calls.append("task")
+        return parse_output(inputs)
+
+    async def score(ctx: EvaluationContext[_Input, _Output, object]) -> dict[str, MetricResult]:
+        await asyncio.sleep(0)
+        calls.append("score")
+        return {
+            "accuracy": MetricResult(
+                score=float(ctx.output == ctx.expected_output),
+                side_info={"async": True},
+            )
+        }
+
+    pipeline = PydanticGEPAOptimization.from_examples(
+        examples=[example],
+        val_examples=[example],
+        task=task,
+        score=score,
+        score_key="accuracy",
+        optimize_fn=fake_optimize,
+    )
+
+    evaluation = pipeline.adapter.evaluate(pipeline.trainset, {}, capture_traces=True)
+
+    assert calls == ["task", "score"]
+    assert evaluation.scores == [1.0]
+    assert evaluation.objective_scores == [{"accuracy": 1.0, "accuracy.async": 1.0}]
 
 
 def test_one_shot_optimize_builds_internal_pipeline_and_typed_shortcuts(
@@ -625,10 +671,13 @@ class FakeDataset:
         cases: list[FakeReportCase] = []
         for case in self.cases:
             output = task(case.inputs)
+            if inspect.isawaitable(output):
+                output = run_awaitable_sync(output)
+            resolved_output = cast("_Output", output)
             context = FakeEvaluatorContext(
                 name=case.name,
                 inputs=case.inputs,
-                output=output,
+                output=resolved_output,
                 expected_output=case.expected_output,
                 metadata=case.metadata,
                 duration=0.01,
@@ -636,13 +685,15 @@ class FakeDataset:
             scores: dict[str, FakeScore] = {}
             for evaluator in self.evaluators:
                 result = evaluator.evaluate(context)
+                if inspect.isawaitable(result):
+                    result = run_awaitable_sync(result)
                 scores.update(normalize_fake_scores(evaluator.evaluation_name, result))
             cases.append(
                 FakeReportCase(
                     name=case.name,
                     inputs=case.inputs,
                     expected_output=case.expected_output,
-                    output=output,
+                    output=resolved_output,
                     scores=scores,
                 )
             )

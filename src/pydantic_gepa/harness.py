@@ -54,7 +54,7 @@ class NamedDatasetConstructor(Protocol[CaseT, OutputT_contra, ReportT_co, Evalua
 class EvaluatableDataset(Protocol[CaseT_co, OutputT_contra, ReportT_co]):
     def evaluate(
         self,
-        task: Callable[[CaseT_co], OutputT_contra],
+        task: Callable[[CaseT_co], OutputT_contra | Awaitable[OutputT_contra]],
         *,
         max_concurrency: int,
         progress: bool,
@@ -65,7 +65,7 @@ class PydanticEvalsHarness(BaseModel, Generic[CaseT, OutputT, ReportT, Evaluator
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     dataset: EvalDataset[EvaluatorT]
-    task: Callable[[CaseT], OutputT]
+    task: Callable[[CaseT], OutputT | Awaitable[OutputT]]
     max_concurrency: int = 5
 
     def evaluate(self, batch: Sequence[CaseT]) -> ReportT:

@@ -60,6 +60,7 @@ from .examples import (
     PydanticGEPAOptimization,
     ScoreFunction,
     ScoreOutput,
+    TaskFunction,
     model_field_accuracy,
     optimize,
 )
@@ -185,6 +186,7 @@ __all__ = (
     "ScoreObjective",
     "ScoreFunction",
     "ScoreOutput",
+    "TaskFunction",
     "Stage",
     "StageResult",
     "Budget",

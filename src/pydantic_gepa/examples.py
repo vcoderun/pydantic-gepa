@@ -1,5 +1,6 @@
 from __future__ import annotations as _annotations
 
+import inspect
 import json
 import warnings
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -42,7 +43,11 @@ OutputModelT = TypeVar("OutputModelT", bound=BaseModel)
 EvaluationScalar: TypeAlias = bool | int | float | str
 OptimizationBackend: TypeAlias = Literal["standard", "optimize_anything"]
 ScoreOutput: TypeAlias = ScoreInput | Mapping[str, ScoreInput]
-ScoreFunction: TypeAlias = Callable[["EvaluationContext[InputsT, OutputT, MetadataT]"], ScoreOutput]
+TaskFunction: TypeAlias = Callable[[InputsT], OutputT | Awaitable[OutputT]]
+ScoreFunction: TypeAlias = Callable[
+    ["EvaluationContext[InputsT, OutputT, MetadataT]"],
+    ScoreOutput | Awaitable[ScoreOutput],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,7 +170,7 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
         *,
         examples: Sequence[Example[InputsT, OutputT, MetadataT]] | None = None,
         data: DataSplit[InputsT, OutputT, MetadataT] | None = None,
-        task: Callable[[InputsT], OutputT],
+        task: TaskFunction[InputsT, OutputT],
         score: ScoreFunction[InputsT, OutputT, MetadataT] | None = None,
         score_key: str = "score",
         val_examples: Sequence[Example[InputsT, OutputT, MetadataT]] | None = None,
@@ -238,7 +243,7 @@ class Optimization(Generic[InputsT, OutputT, MetadataT]):
         )
         adapter = PydanticGEPAAdapter.from_dataset(
             dataset=dataset,
-            task=cast("Callable[[EvalCaseView[InputsT, OutputT, MetadataT]], OutputT]", task),
+            task=cast("TaskFunction[EvalCaseView[InputsT, OutputT, MetadataT], OutputT]", task),
             injections=list(injections),
             objective=active_objective,
             components=active_components,
@@ -342,7 +347,7 @@ def optimize(
     *,
     train: Sequence[Example[InputsT, OutputT, MetadataT]],
     validation: Sequence[Example[InputsT, OutputT, MetadataT]],
-    task: Callable[[InputsT], OutputT],
+    task: TaskFunction[InputsT, OutputT],
     score: ScoreFunction[InputsT, OutputT, MetadataT] | None = None,
     evaluators: Sequence[PydanticEvaluator[InputsT, OutputT, MetadataT]] = (),
     components: ComponentCatalog | Sequence[CandidateComponent] | None = None,
@@ -457,7 +462,7 @@ def _callable_score_evaluator(
         def evaluate(
             self,
             ctx: EvalContextView[InputsT, OutputT, MetadataT],
-        ) -> EvaluationOutput:
+        ) -> EvaluationOutput | Awaitable[EvaluationOutput]:
             output = score(
                 EvaluationContext(
                     name=ctx.name,
@@ -468,6 +473,16 @@ def _callable_score_evaluator(
                     duration=ctx.duration,
                 )
             )
+            if inspect.isawaitable(output):
+
+                async def await_output() -> EvaluationOutput:
+                    return _to_evaluation_output(
+                        await cast("Awaitable[ScoreOutput]", output),
+                        score_key=score_key,
+                        evaluation_reason_type=evaluation_reason_type,
+                    )
+
+                return await_output()
             return _to_evaluation_output(
                 output,
                 score_key=score_key,
@@ -565,6 +580,7 @@ __all__ = (
     "PydanticGEPAOptimization",
     "ScoreFunction",
     "ScoreOutput",
+    "TaskFunction",
     "model_field_accuracy",
     "optimize",
 )

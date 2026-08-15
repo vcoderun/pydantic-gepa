@@ -8,7 +8,8 @@ and systems that need direct reflective datasets.
 
 `PydanticGEPAAdapter.from_dataset(...)` binds an existing Pydantic Evals dataset,
 task, injections, objective, component catalog, concurrency, and optional
-recorder.
+recorder. Tasks may return their output directly or as an awaitable; the managed
+Pydantic Evals loop awaits asynchronous tasks without moving them to worker threads.
 
 ```python
 adapter = PydanticGEPAAdapter.from_dataset(

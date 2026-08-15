@@ -33,8 +33,9 @@ The package starts with a Python API:
 - generic candidate context/value injections for runtime schema or config overrides
 - high-level `optimize(...)`, `Example`, and `Optimization.from_examples(...)` APIs that keep
   Pydantic Evals as internal runtime plumbing for common optimization flows
-- callable score functions and built-in `model_field_accuracy(...)` helpers, with custom
-  Pydantic Evals evaluators still available as an advanced escape hatch
+- synchronous or asynchronous task and score functions, plus built-in
+  `model_field_accuracy(...)` helpers, with custom Pydantic Evals evaluators still available as
+  an advanced escape hatch
 - Pydantic Evals harness normalization
 - score extraction from named evaluator scores
 - `MetricResult(score, feedback, side_info)` for richer reflection signals

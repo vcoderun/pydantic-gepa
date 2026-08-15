@@ -10,6 +10,8 @@
   candidate/component lineage for external evidence systems.
 - Deprecated `autobench_observer()` in favor of Autobench's native pydantic-gepa instrumentor or
   the backend-neutral `callback_observer()` helper.
+- Added native awaitable task and score support to `optimize(...)`,
+  `Optimization.from_examples(...)`, and `PydanticGEPAAdapter`.
 
 All notable changes to this project are documented here. The project follows
 Semantic Versioning; experimental APIs may change between minor releases.

@@ -1,6 +1,6 @@
 from __future__ import annotations as _annotations
 
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from typing import Generic, Protocol, TypeVar, cast, runtime_checkable
 
@@ -102,7 +102,7 @@ class PydanticGEPAAdapter(
         cls,
         *,
         dataset: EvalDataset[EvaluatorT],
-        task: Callable[[DataInstT], RolloutOutputT],
+        task: Callable[[DataInstT], RolloutOutputT | Awaitable[RolloutOutputT]],
         injections: list[CandidateInjection],
         objective: ScoreObjective,
         components: ComponentCatalog | None = None,
@@ -113,7 +113,12 @@ class PydanticGEPAAdapter(
         max_concurrency: int = 5,
     ) -> PydanticGEPAAdapter[DataInstT, RolloutOutputT, EvaluatorT]:
         return cls(
-            harness=PydanticEvalsHarness(
+            harness=PydanticEvalsHarness[
+                DataInstT,
+                RolloutOutputT,
+                ReportEnvelope,
+                EvaluatorT,
+            ](
                 dataset=dataset,
                 task=task,
                 max_concurrency=max_concurrency,
