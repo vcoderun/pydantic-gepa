@@ -12,6 +12,8 @@
   the backend-neutral `callback_observer()` helper.
 - Added native awaitable task and score support to `optimize(...)`,
   `Optimization.from_examples(...)`, and `PydanticGEPAAdapter`.
+- Kept Pydantic AI reflection usage accounting compatible with both the legacy
+  `usage()` method and the v2 `usage` result property.
 
 All notable changes to this project are documented here. The project follows
 Semantic Versioning; experimental APIs may change between minor releases.

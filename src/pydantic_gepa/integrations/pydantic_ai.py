@@ -46,7 +46,8 @@ class PydanticAIReflectionModel(Generic[DepsT]):
                 deps=self.deps,
                 model_settings=settings or None,
             )
-            usage = result.usage()
+            usage_or_getter = result.usage
+            usage = usage_or_getter() if callable(usage_or_getter) else usage_or_getter
             details: dict[str, JsonValue] = dict(usage.details)
             return ReflectionResponse(
                 text=result.output,

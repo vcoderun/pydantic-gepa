@@ -297,6 +297,17 @@ def test_pydantic_ai_reflection_uses_agent_settings_usage_and_message_prompts() 
     assert model.records[0].response.metadata["tool_calls"] == 2
 
 
+def test_pydantic_ai_reflection_accepts_usage_as_a_result_property() -> None:
+    model = PydanticAIReflectionModel(
+        agent=cast("Agent[None, str]", _PropertyUsageAgent()),
+        deps=None,
+    )
+
+    assert model("prompt") == "agent reflection"
+    assert model.total_tokens_in == 8
+    assert model.total_tokens_out == 3
+
+
 def test_pydantic_ai_reflection_can_construct_an_agent_lazily(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -615,6 +626,23 @@ class _AgentResult:
 
     def usage(self) -> _Usage:
         return _Usage()
+
+
+class _PropertyUsageAgentResult:
+    output = "agent reflection"
+    usage = _Usage()
+
+
+class _PropertyUsageAgent:
+    def run_sync(
+        self,
+        prompt: str,
+        *,
+        deps: None,
+        model_settings: Mapping[str, int | float] | None,
+    ) -> _PropertyUsageAgentResult:
+        del prompt, deps, model_settings
+        return _PropertyUsageAgentResult()
 
 
 class _Agent:
