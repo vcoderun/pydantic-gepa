@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Report selection of an existing GEPA candidate as `backend.progress` with
+  `name="candidate_selected"`, preserving its ID, values, and selection score without emitting
+  another `candidate.proposed` lifecycle.
 - Added the typed Optimize Anything Omni engine, composition, result, budget, and event contracts.
 - Added common ordered lifecycle events for standard GEPA, Optimize Anything engines and
   compositions, staged plans, evaluation cases, selections, budgets, checkpoints, and terminal

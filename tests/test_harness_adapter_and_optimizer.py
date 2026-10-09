@@ -901,7 +901,7 @@ def test_gepa_event_bridge_normalizes_external_callback_payloads() -> None:
         "run.completed",
         "iteration.started",
         "iteration.completed",
-        "candidate.proposed",
+        "backend.progress",
         "backend.progress",
         "evaluation.started",
         "evaluation.completed",
@@ -931,6 +931,44 @@ def test_gepa_event_bridge_normalizes_external_callback_payloads() -> None:
         "generation": None,
         "metadata": {},
     }
+
+
+def test_reselecting_an_accepted_candidate_emits_progress_without_a_new_proposal() -> None:
+    recorder = _EventRecorder()
+    bridge = GEPAEventBridge(recorder=recorder)
+    bridge.on_candidate_accepted(
+        cast(
+            "CandidateAcceptedEvent",
+            {"iteration": 1, "new_candidate_idx": 1, "new_score": 1.0, "parent_ids": [0]},
+        )
+    )
+    for iteration in (2, 3):
+        bridge.on_candidate_selected(
+            cast(
+                "CandidateSelectedEvent",
+                {
+                    "iteration": iteration,
+                    "candidate_idx": 1,
+                    "candidate": {"prompt": "accepted"},
+                    "score": 1.0,
+                },
+            )
+        )
+
+    assert [record["event_name"] for record in recorder.events] == [
+        "candidate.accepted",
+        "backend.progress",
+        "backend.progress",
+    ]
+    for iteration, record in zip((2, 3), recorder.events[1:], strict=True):
+        payload = cast("Mapping[str, Any]", record["payload"])
+        assert payload["name"] == "candidate_selected"
+        assert payload["candidate_id"] == "1"
+        assert payload["iteration"] == iteration
+        assert payload["metadata"] == {
+            "selection_score": 1.0,
+            "candidate": {"prompt": "accepted"},
+        }
 
 
 def test_backend_only_bridge_suppresses_root_lifecycle_and_reports_terminal_errors() -> None:

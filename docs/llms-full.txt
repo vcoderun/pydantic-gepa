@@ -2412,6 +2412,11 @@ feature has no normalized event yet.
 `GEPAEventBridge` define package boundaries for systems such as Autobench. A
 recorder should retain immutable evidence and must not modify candidate scores.
 
+Selecting an existing GEPA candidate emits `backend.progress` with
+`name="candidate_selected"`. The event retains `candidate_id`, the iteration,
+and `metadata.selection_score` and `metadata.candidate`. Selection does not
+emit `candidate.proposed`; that event is reserved for new proposals.
+
 ## Failure policy
 
 Observer errors are configured separately through

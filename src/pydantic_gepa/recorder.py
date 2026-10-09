@@ -160,12 +160,15 @@ class GEPAEventBridge:
     def on_candidate_selected(self, event: CandidateSelectedEvent) -> None:
         candidate_id = str(event["candidate_idx"])
         self._emit(
-            CandidateProposed(
+            BackendProgress(
                 run_id=self.run_id,
                 iteration=event["iteration"],
                 candidate_id=candidate_id,
-                candidate=Candidate(values=dict(event["candidate"]), id=candidate_id),
-                metadata={"selection_score": event["score"]},
+                name="candidate_selected",
+                metadata={
+                    "selection_score": event["score"],
+                    "candidate": dict(event["candidate"]),
+                },
             )
         )
 
