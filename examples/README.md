@@ -1,7 +1,9 @@
 # pydantic-gepa examples
 
 These examples use the released `pydantic-ai`, `pydantic-evals`, and `gepa`
-dependencies from the `examples` extra. Deterministic examples do not require API keys.
+dependencies from the `examples` extra, except `experimental_optimize_anything.py`,
+which requires the upstream GEPA revision documented in
+[the installation guide](../docs/installation.md). Deterministic examples do not require API keys.
 
 - `basic.py`: optimize agent instructions through the common `Example`, `Component`,
   and `optimize(...)` API.

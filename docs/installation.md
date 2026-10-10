@@ -33,6 +33,17 @@ uv add "pydantic-gepa[examples]"      # All example dependencies
 other external agent engines may still require their own CLI, credentials, and
 operating-system sandbox support.
 
+The experimental Omni backend currently requires an upstream GEPA Git revision.
+The PyPI release `gepa==0.1.4` supports standard GEPA optimization but does not
+contain the `gepa.oa` modules. For Omni, also install the tested revision:
+
+```bash
+uv add "gepa[full] @ git+https://github.com/gepa-ai/gepa.git@81dbae904bed94f5f3b8b4c704c0a81c7510b986"
+```
+
+Standard optimization through `pydantic-gepa[integrations]` does not require
+this Git dependency.
+
 ## Python support
 
 Python 3.11, 3.12, and 3.13 are supported. Verify the installation:

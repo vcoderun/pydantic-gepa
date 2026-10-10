@@ -16,10 +16,14 @@ The full extra includes upstream agent-engine dependencies:
 
 ```bash
 uv add "pydantic-gepa[optimize-anything]"
+uv add "gepa[full] @ git+https://github.com/gepa-ai/gepa.git@81dbae904bed94f5f3b8b4c704c0a81c7510b986"
 ```
 
 The lighter `integrations` extra is enough for standard GEPA and for custom
 Optimize Anything engines that do not need the built-in agent engines.
+All Omni engines, including custom engines, require the upstream `gepa.oa`
+modules from the tested Git revision above. They are not present in the PyPI
+release `gepa==0.1.4`; installing the extra alone does not provide them.
 
 ## First Engine Run
 

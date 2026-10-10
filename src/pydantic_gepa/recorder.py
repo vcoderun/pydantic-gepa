@@ -265,7 +265,7 @@ class GEPAEventBridge:
                 candidate_id=str(event["candidate_idx"]),
                 name="reflective_dataset_built",
                 metadata={
-                    "iteration_id": event["iteration_id"],
+                    "iteration_id": event.get("iteration_id"),
                     "components": components,
                     "record_count": sum(len(records) for records in event["dataset"].values()),
                 },

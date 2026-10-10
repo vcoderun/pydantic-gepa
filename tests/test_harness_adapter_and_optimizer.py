@@ -933,6 +933,35 @@ def test_gepa_event_bridge_normalizes_external_callback_payloads() -> None:
     }
 
 
+@pytest.mark.parametrize("iteration_id", [None, "iteration-2"])
+def test_reflective_dataset_events_support_released_gepa_payloads(
+    iteration_id: str | None,
+) -> None:
+    recorder = _EventRecorder()
+    bridge = GEPAEventBridge(recorder=recorder)
+    event: dict[str, Any] = {
+        "iteration": 2,
+        "candidate_idx": 1,
+        "components": ["prompt"],
+        "dataset": {"prompt": [{"feedback": "improve"}]},
+    }
+    if iteration_id is not None:
+        event["iteration_id"] = iteration_id
+
+    bridge.on_reflective_dataset_built(cast("ReflectiveDatasetBuiltEvent", event))
+
+    assert len(recorder.events) == 1
+    assert recorder.events[0]["event_name"] == "backend.progress"
+    payload = cast("Mapping[str, Any]", recorder.events[0]["payload"])
+    assert payload["iteration"] == 2
+    assert payload["candidate_id"] == "1"
+    assert payload["metadata"] == {
+        "iteration_id": iteration_id,
+        "components": ["prompt"],
+        "record_count": 1,
+    }
+
+
 def test_reselecting_an_accepted_candidate_emits_progress_without_a_new_proposal() -> None:
     recorder = _EventRecorder()
     bridge = GEPAEventBridge(recorder=recorder)

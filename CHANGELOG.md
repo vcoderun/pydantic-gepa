@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-10-10
+
+- Publish the complete package on PyPI and document the upstream Git revision
+  required by the experimental Omni backend.
+- Fingerprint dataclass fields without deep-copying runtime resources, allowing
+  callable reflection models with thread locks to start optimization.
+- Accept reflective-dataset events from the PyPI GEPA release when they omit
+  the newer optional iteration identifier.
 - Report selection of an existing GEPA candidate as `backend.progress` with
   `name="candidate_selected"`, preserving its ID, values, and selection score without emitting
   another `candidate.proposed` lifecycle.

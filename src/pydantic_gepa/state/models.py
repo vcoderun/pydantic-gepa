@@ -2,7 +2,7 @@ from __future__ import annotations as _annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, Protocol, TypeVar
@@ -44,7 +44,7 @@ def _json_content(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return _json_content(value.model_dump(mode="python"))
     if is_dataclass(value) and not isinstance(value, type):
-        return _json_content(asdict(value))
+        return {item.name: _json_content(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, Mapping):
         return {str(key): _json_content(item) for key, item in value.items()}
     if isinstance(value, tuple | list):

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from io import StringIO
 from pathlib import Path
+from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -367,6 +368,22 @@ def test_content_fingerprints_normalize_models_dataclasses_sets_and_opaque_value
         "model": StoredResult(value="x"),
     }
     assert content_fingerprint(first) == content_fingerprint(second)
+
+
+def test_content_fingerprints_do_not_copy_dataclass_resources() -> None:
+    @dataclass
+    class Configuration:
+        name: str
+        resource: Lock
+
+    resource = Lock()
+    first = content_fingerprint(Configuration(name="first", resource=resource))
+    equivalent = content_fingerprint(Configuration(name="first", resource=resource))
+    changed = content_fingerprint(Configuration(name="second", resource=resource))
+
+    assert first == equivalent
+    assert first != changed
+    assert not resource.locked()
 
 
 def test_file_run_store_writes_and_resumes_owned_state(tmp_path: Path) -> None:
